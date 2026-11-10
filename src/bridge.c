@@ -1298,6 +1298,16 @@ uint8_t bridge_response_seq(void)
     return last_resp_seq;
 }
 
+const uint8_t *bridge_response_ptr(void)
+{
+    return last_resp;
+}
+
+uint8_t bridge_response_len(void)
+{
+    return last_resp_len;
+}
+
 void bridge_abort(void)
 {
     if (bus.state == BR_BUS_BUSY) {

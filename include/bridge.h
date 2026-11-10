@@ -147,6 +147,12 @@ uint8_t bridge_busy(void);
 /** @brief Monotonic response counter (changes on every response update) */
 uint8_t bridge_response_seq(void);
 
+/** @brief Pointer to the current response frame [status][cmd][len][data...] */
+const uint8_t *bridge_response_ptr(void);
+
+/** @brief Length of the current response frame */
+uint8_t bridge_response_len(void);
+
 #ifdef __cplusplus
 }
 #endif

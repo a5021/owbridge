@@ -19,6 +19,7 @@
 #include "host_uart.h"
 #include "bridge.h"
 #include "config.h"
+#include "protocol.h"
 
 #include "stm32f0xx.h"
 
@@ -69,25 +70,6 @@ enum {
     AT_STAT,
     AT_DEVS
 };
-
-/* --- CRC-8 (Dallas/Maxim, poly 0x8C) ------------------------------------- */
-
-static uint8_t crc8(const uint8_t *data, uint8_t len)
-{
-    uint8_t crc = 0u;
-    for (uint8_t i = 0u; i < len; i++) {
-        uint8_t b = data[i];
-        for (uint8_t j = 0u; j < 8u; j++) {
-            uint8_t mix = (uint8_t)((crc ^ b) & 1u);
-            crc >>= 1;
-            if (mix) {
-                crc ^= 0x8Cu;
-            }
-            b >>= 1;
-        }
-    }
-    return crc;
-}
 
 /* --- TX into the DMA buffer ---------------------------------------------- */
 
@@ -155,22 +137,22 @@ static void uart_tx_start(uint8_t len)
 
 static void push_binary_response(void)
 {
-    uint8_t resp[3u + BR_MAX_RESP];
-    uint8_t n = bridge_get_response(resp);
+    const uint8_t *resp = bridge_response_ptr();
+    uint8_t n = bridge_response_len();
     tx_pos = 0u;
     tx_putc((char)0x5A);
     tx_putc((char)0xA5);
     for (uint8_t i = 0u; i < n; i++) {
         tx_putc((char)resp[i]);
     }
-    tx_putc((char)crc8(resp, n));
+    tx_putc((char)protocol_crc8(resp, n));
     uart_tx_start(tx_pos);
 }
 
 static void push_at_response(void)
 {
-    uint8_t resp[3u + BR_MAX_RESP];
-    uint8_t n = bridge_get_response(resp);
+    const uint8_t *resp = bridge_response_ptr();
+    uint8_t n = bridge_response_len();
     uint8_t status = (n >= 3u) ? resp[0] : BR_BUS_ERROR;
 
     if (status == BR_BUSY) {
@@ -377,7 +359,7 @@ static void uart_decode(uint8_t b)
         }
         break;
     case 5u:
-        if (crc8(rx_frame, (uint8_t)(2u + rx_len)) == b) {
+        if (protocol_crc8(rx_frame, (uint8_t)(2u + rx_len)) == b) {
             bridge_submit(rx_frame, (uint8_t)(2u + rx_len));
         }
         rx_state = 0u;
