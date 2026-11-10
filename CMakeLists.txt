@@ -40,6 +40,7 @@ set(OW_SYSCLK_MHZ "48" CACHE STRING "System clock in MHz")
 set(OW_MAX_DEVICES "16" CACHE STRING "DS18B20 device table size")
 set(OW_PARASITE ON CACHE BOOL "Parasite-powered 1-Wire bus")
 set(OW_LIBRARY_TAG "v3.1.2" CACHE STRING "stm32-async-1wire git tag")
+set(OW_OPT "-O2" CACHE STRING "Optimisation flag for the firmware and the library")
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -101,7 +102,7 @@ if(OW_PARASITE)
 endif()
 ow_add_library(owlib ${_ow_lib_args})
 
-target_compile_options(owlib PRIVATE -flto)
+target_compile_options(owlib PRIVATE ${OW_OPT} -flto)
 target_link_options(owlib INTERFACE -flto)
 
 # ---------------------------------------------------------------------------
@@ -141,7 +142,7 @@ target_include_directories(owbridge PRIVATE
     ${CMSIS_CORE_INCLUDE}
     ${CMSIS_DEVICE_INCLUDE}
 )
-target_compile_options(owbridge PRIVATE -Os -flto -ffunction-sections -fdata-sections)
+target_compile_options(owbridge PRIVATE ${OW_OPT} -flto -ffunction-sections -fdata-sections)
 target_link_libraries(owbridge PRIVATE owlib)
 target_link_options(owbridge PRIVATE
     -T${OW_LINKER_SCRIPT}
