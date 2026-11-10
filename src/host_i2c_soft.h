@@ -6,12 +6,17 @@
 #ifndef HOST_I2C_SOFT_H
 #define HOST_I2C_SOFT_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void host_i2c_soft_init(void);
 void host_i2c_soft_poll(void);
+
+/** @brief 1 while an I2C transaction is active (START..STOP), 0 when idle */
+uint8_t host_i2c_soft_busy(void);
 
 #ifdef __cplusplus
 }

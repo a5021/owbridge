@@ -89,8 +89,10 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 - **SPI**: polled RXNE/TXE in the main loop. DMA is not possible: SPI1_RX is
   DMA1 channel 2 and SPI1_TX is DMA1 channel 3, which the 1-Wire engine owns.
 - **I2C**: software slave, polled SCL/SDA edges in the main loop. No EXTI, no
-  DMA (GPIO edges cannot trigger DMA). At roughly 2 us per main-loop pass,
-  100 kHz has comfortable margin.
+  DMA (GPIO edges cannot trigger DMA). During an I2C transaction the 1-Wire
+  poll is deferred (with a 50 ms safety valve), so its encode/decode cannot
+  drop SCL edges at 100 kHz; the 1-Wire timing is hardware-generated, so only
+  the state machine is delayed.
 
 ## Protocol
 

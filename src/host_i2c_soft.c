@@ -235,3 +235,8 @@ void host_i2c_soft_poll(void)
     last_scl = scl;
     last_sda = sda;
 }
+
+uint8_t host_i2c_soft_busy(void)
+{
+    return (state != I2C_IDLE) ? 1u : 0u;
+}
