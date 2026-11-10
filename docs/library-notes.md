@@ -23,18 +23,22 @@ text = 23588 B, data = 12 B, bss = 2776 B
 
 against a documented limit of 16 KB flash / 4 KB RAM.
 
-**Consequence.** The firmware does not link into the documented 16 KB:
-`region FLASH overflowed by 8312 bytes`. Even without the bridge, the
-library's own `9_multi` reference occupies 12792 B of text - already 78 % of
-16 KB. Any application that uses all three drivers is effectively out of
-reach on a 16 KB part.
+**Consequence.** With the library and the application left at the helper's
+default (`ow_add_library` sets no optimisation flag, so the library compiles
+at `-O0`), the image does not link into the documented 16 KB:
+`region FLASH overflowed by 8312 bytes`. Compiling both at `-Os` brings the
+same UART image down to 15.5 KB, so it does fit; at `-O2` it is 20.5 KB. The
+overflow we first hit was therefore mostly the helper's implicit `-O0`, not
+an inherent size floor. Even without the bridge, the library's own `9_multi`
+reference occupies 12792 B of text at `-O0`.
 
 **Resolution adopted here.** The F030F4P6 die actually carries **32 KB of
 flash** (the same as the F6P6); the upper 16 KB are undocumented but
 reachable. The linker script was moved to 31 KB of code plus a 1 KB
-configuration page, and the 23588 B image fits. This is a vendor-specific
-trick and should be called out in the library's `hardware.md` as a known fact
-about the F030F4P6.
+configuration page. With `-O2` the UART image is 20.5 KB and fits
+comfortably; with `-Os` it is 15.5 KB and would fit the documented 16 KB.
+This is a vendor-specific trick and should be called out in the library's
+`hardware.md` as a known fact about the F030F4P6.
 
 **Suggestion.**
 - State explicitly in `docs/hardware.md` that three drivers plus an
@@ -191,11 +195,31 @@ To keep this review balanced:
 
 ---
 
+## 10. `ow_add_library.cmake` leaves the optimisation level unset
+
+**Observation.** The helper's `target_compile_options` adds `-mcpu`,
+`-mthumb`, `-Wall -Wextra` and `-ffunction-sections -fdata-sections`, but no
+`-O` flag. GCC therefore compiles the library sources at `-O0`, while the
+consumer's own application is usually built at `-Os`/`-O2`. In our image the
+unoptimised library accounted for most of the size: the UART build was
+23.7 KB at the helper's default and 15.5 KB once both library and application
+used `-Os`.
+
+**Consequence.** A downstream project that follows the helper's defaults gets
+an oversized and slow 1-Wire library without any warning.
+
+**Suggestion.** Either add a cache option (`OW_OPT`, default `-Os`) to the
+helper and apply it to `${tgt}`, or document that the consumer must pass
+`-O2`/`-Os` explicitly. Note that `-O3` does not fit a 31 KB image with the
+three drivers, so `-O2` is the practical ceiling.
+
+---
+
 ## Blocker summary for the F030F4P6
 
 | # | Blocker | Impact | Workaround |
 |---|---------|--------|------------|
-| 1 | Flash 23.6 KB > 16 KB | does not link | use the undocumented 32 KB / F030K6T6 |
+| 1 | Flash (large at `-O0`) | does not link into 16 KB at the helper default | `-O2` (20.5 KB) or `-Os` (15.5 KB) plus the undocumented 32 KB |
 | 2 | No USART2 | only USART1 | PA2/PA3 (full duplex) |
 | 3 | I2C1 on PA9/PA10 | collides with the bus | software I2C / drop I2C |
 | 4 | No gate hook | no external strong pull-up | patch the port (weak hook) |
