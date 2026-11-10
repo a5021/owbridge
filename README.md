@@ -79,6 +79,7 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `OW_SYSCLK_MHZ` | `48` | system clock |
 | `OW_PARASITE` | `ON` | parasite power |
 | `OW_MAX_DEVICES` | `16` | DS18B20 device table size |
+| `OW_OPT` | `-O2` | optimisation flag, applied to the firmware **and** the library |
 
 ## Transport details
 
@@ -228,13 +229,20 @@ override it at runtime with `OW_SET_POWER`.
 
 ## Resource usage
 
-| Variant | Flash | RAM (bss + data) |
-|---------|-------|------------------|
-| UART | 23 536 B | 2 672 B |
-| SPI | 21 356 B | 2 448 B |
-| I2C | 21 652 B | 2 456 B |
+| Variant | Flash (`-O2`) | RAM (bss + data) |
+|---------|---------------|------------------|
+| UART | 20 480 B | 2 552 B |
+| SPI | 16 828 B | 2 328 B |
+| I2C | 17 032 B | 2 336 B |
 
 All fit the 31 KB code region and the 4 KB RAM (1 KB stack reserved).
+
+The library is compiled with the same `OW_OPT` as the firmware. The vendored
+helper leaves the optimisation level unset (GCC then defaults to `-O0`), so
+setting `-O2` explicitly is the single largest code-size and speed win: the
+UART image drops from about 23.7 KB at the library's implicit `-O0` to 20.5 KB
+at `-O2`, and to 15.5 KB with `-Os`. `-O3` does not fit (it overflows the code
+region), so `-O2` is the recommended default.
 
 ## Hardware test results
 
