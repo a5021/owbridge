@@ -12,6 +12,9 @@
  * of microseconds and would drop SCL edges at 100 kHz. The 1-Wire timing is
  * hardware-generated, so deferring the poll only delays the state machine. A
  * 50 ms safety valve forces the poll if the I2C bus stalls.
+ *
+ * -DOWBRIDGE_PROFILE=1 adds a one-off TIM3-based profiler (I2C build only);
+ * the results live in RAM and are read over SWD.
  */
 
 #include "board.h"
@@ -27,6 +30,9 @@
 #include "host_spi.h"
 #elif defined(HOST_IF_I2C)
 #include "host_i2c_soft.h"
+#if defined(OWBRIDGE_PROFILE)
+#include "profile.h"
+#endif
 #else
 #error "Select a host interface: -DHOST_IF=UART, SPI, or I2C"
 #endif
@@ -36,6 +42,9 @@ int main(void)
 #if defined(HOST_IF_I2C)
     uint32_t i2c_busy_since = 0u;
     uint8_t i2c_was_busy = 0u;
+#endif
+#if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
+    profile_init();
 #endif
 
     board_init();
@@ -63,6 +72,12 @@ int main(void)
 #endif
 
     for (;;) {
+#if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
+        if (!prof_cmd_done && board_millis() > 1000u) {
+            profile_experiment();
+        }
+        profile_loop_begin();
+#endif
         board_watchdog_refresh();
 #if defined(HOST_IF_UART)
         host_uart_poll();
@@ -71,10 +86,22 @@ int main(void)
         host_spi_poll();
         bridge_poll();
 #elif defined(HOST_IF_I2C)
+#if defined(OWBRIDGE_PROFILE)
+        profile_i2c_begin();
+#endif
         host_i2c_soft_poll();
+#if defined(OWBRIDGE_PROFILE)
+        profile_i2c_end();
+#endif
         if (!host_i2c_soft_busy()) {
             i2c_was_busy = 0u;
+#if defined(OWBRIDGE_PROFILE)
+            profile_bridge_begin();
+#endif
             bridge_poll();
+#if defined(OWBRIDGE_PROFILE)
+            profile_bridge_end();
+#endif
         } else if (!i2c_was_busy) {
             i2c_was_busy = 1u;
             i2c_busy_since = board_millis();
@@ -82,6 +109,9 @@ int main(void)
             bridge_poll(); /* safety valve: never starve the 1-Wire */
             i2c_busy_since = board_millis();
         }
+#endif
+#if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
+        profile_loop_end();
 #endif
     }
 }

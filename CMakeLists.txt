@@ -41,6 +41,7 @@ set(OW_MAX_DEVICES "16" CACHE STRING "DS18B20 device table size")
 set(OW_PARASITE ON CACHE BOOL "Parasite-powered 1-Wire bus")
 set(OW_LIBRARY_TAG "v3.1.2" CACHE STRING "stm32-async-1wire git tag")
 set(OW_OPT "-O2" CACHE STRING "Optimisation flag for the firmware and the library")
+option(OWBRIDGE_PROFILE "Enable the one-off I2C polling profiler (TIM3, SWD-readable)" OFF)
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -124,6 +125,10 @@ endif()
 # ---------------------------------------------------------------------------
 # Firmware
 # ---------------------------------------------------------------------------
+if(OWBRIDGE_PROFILE)
+    add_compile_definitions(OWBRIDGE_PROFILE=1)
+endif()
+
 add_executable(owbridge
     src/main.c
     src/board.c
@@ -132,6 +137,7 @@ add_executable(owbridge
     src/cache.c
     src/config.c
     src/stats.c
+    src/profile.c
     ${HOST_SRC}
     ${CMSIS_SYSTEM_SRC}
     ${CMSIS_STARTUP_ASM}
