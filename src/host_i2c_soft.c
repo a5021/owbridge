@@ -63,7 +63,7 @@ static uint8_t last_sda;
 
 /* --- Helpers -------------------------------------------------------------- */
 
-static void i2c_start(void)
+static inline void i2c_start(void)
 {
     state = I2C_ADDR;
     bit = 0u;
@@ -73,7 +73,7 @@ static void i2c_start(void)
     rx_idx = 0u;
 }
 
-static void i2c_stop(void)
+static inline void i2c_stop(void)
 {
     if (state == I2C_RX && rx_idx >= 2u) {
         bridge_submit(rx_buf, rx_idx);
@@ -85,7 +85,7 @@ static void i2c_stop(void)
     ack_phase = 0u;
 }
 
-static void i2c_scl_rising(uint8_t sda)
+static inline void i2c_scl_rising(uint8_t sda)
 {
     switch (state) {
     case I2C_ADDR:
@@ -129,7 +129,7 @@ static void i2c_scl_rising(uint8_t sda)
     }
 }
 
-static void i2c_scl_falling(void)
+static inline void i2c_scl_falling(void)
 {
     switch (state) {
     case I2C_ADDR:
@@ -210,8 +210,9 @@ void host_i2c_soft_init(void)
 
 void host_i2c_soft_poll(void)
 {
-    uint8_t scl = SCL_READ();
-    uint8_t sda = SDA_READ();
+    uint32_t idr = GPIOA->IDR;
+    uint8_t scl = (uint8_t)((idr >> SCL_PIN) & 1u);
+    uint8_t sda = (uint8_t)((idr >> SDA_PIN) & 1u);
 
     /* START/STOP: SDA edge while SCL is high. */
     if (sda != last_sda && scl) {
