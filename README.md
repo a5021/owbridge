@@ -50,10 +50,14 @@ Host-interface pins:
 
 ```bash
 cmake -S . -B build \
-    -DCMAKE_TOOLCHAIN_FILE=vendor/stm32-async-1wire/cmake/arm-none-eabi-gcc.cmake \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake \
     -DHOST_IF=UART
 cmake --build build -j
 ```
+
+The first configure fetches `stm32-async-1wire` v3.1.2 and the pinned CMSIS
+repositories from GitHub into `build/_deps/`. No dependencies are vendored in
+the repository.
 
 Output: `build/owbridge.elf`, `build/owbridge.bin`, `build/owbridge.hex`.
 
