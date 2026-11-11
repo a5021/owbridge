@@ -6,19 +6,18 @@
  *
  * Pin map (TSSOP-20; only PA0-PA7, PA9-PA10, PA13-PA14, PB1, PF0-PF1 exist):
  *   PA10  1-Wire DQ          (owned by the 1-Wire library, AF2 TIM1_CH3)
- *   PA2   USART1 TX          host UART, AF1
- *   PA3   USART1 RX          host UART, AF1
- *   PA4   SPI1 NSS / CS      host GPIO (software CS), input
- *   PA5   SPI1 SCK           host GPIO, AF0
- *   PA6   SPI1 MISO          host GPIO, AF0
- *   PA7   SPI1 MOSI          host GPIO, AF0
- *   PA9   strong pull-up gate  P-MOSFET gate, push-pull output
+ *   PA9   strong pull-up switch  gate-driver input, active-high, push-pull
  *   PA0   status LED         push-pull output
  *   PA1   error LED          push-pull output
  *   PB1   config jumper 0    input, pull-up
  *   PF0   config jumper 1    input, pull-up
  *   PF1   spare              input, pull-up
  *   PA13/PA14  SWD           left at their reset alternate function
+ *
+ * Host pins are variant-dependent:
+ *   UART: PA2 = TX, PA3 = RX (AF1)
+ *   SPI:  PA4 = CS (GPIO input), PA5 = SCK, PA6 = MISO, PA7 = MOSI (AF0)
+ *   I2C:  PA4 = SCL (input, pull-up), PA5 = SDA (open-drain)
  */
 
 #include "board.h"
@@ -169,7 +168,11 @@ static void board_gpio_init(void)
     gpio_pull_up(GPIOF, 1);
 }
 
-/* --- Console (USART1 TX on PA9 is not used; the host UART is the console) -- */
+/* --- Console helpers (UART build only) ----------------------------------- */
+/* USART1 is owned by host_uart.c on PA2/PA3; these helpers are not a separate
+   console. They are compiled only in the UART build, after host_uart_init(). */
+
+#if defined(HOST_IF_UART)
 
 void board_putc(char c)
 {
@@ -219,6 +222,8 @@ void board_put_hex(uint8_t b)
     board_putc(hex[b >> 4]);
     board_putc(hex[b & 0x0Fu]);
 }
+
+#endif /* HOST_IF_UART */
 
 /* --- Millisecond tick (SysTick, polled, no interrupt) --------------------- */
 
@@ -299,4 +304,9 @@ void board_init(void)
     board_gpio_init();
     board_tick_init();
     board_watchdog_init();
+}
+
+void board_reset(void)
+{
+    NVIC_SystemReset();
 }

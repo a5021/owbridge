@@ -10,7 +10,8 @@
  *   - the wall-clock time of four commands (prof_cmd_*_ms).
  *
  * The busy-loop period (priority scheduling, bridge poll skipped) is
- * approximately prof_loop_* minus prof_bridge_*.
+ * approximately prof_loop_* minus prof_bridge_*. The measured results are
+ * documented in docs/i2c-timing.md.
  */
 
 #ifndef PROFILE_H

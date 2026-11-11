@@ -1,6 +1,6 @@
 /**
  * @file bridge.c
- * @brief I2C/UART/GPIO <-> 1-Wire bridge core - see bridge.h
+ * @brief I2C/UART/SPI <-> 1-Wire bridge core - see bridge.h
  *
  * One command at a time owns the 1-Wire bus (the library rule). A submitted
  * command either starts immediately or is queued; the host polls the response
@@ -76,6 +76,14 @@ static void resp_busy(uint8_t cmd)
     bus.resp.cmd = cmd;
     bus.resp.len = 0u;
     resp_commit();
+}
+
+/* Mirror the last completed command on the error LED (active-high API). */
+static void led_result(uint8_t status)
+{
+    if (config_get()->led_enable) {
+        board_led_error((status == BR_OK) ? 0u : 1u);
+    }
 }
 
 /* --- Command queue -------------------------------------------------------- */
@@ -564,8 +572,9 @@ static void start_ow_abort(const br_command_t *cmd)
 
 static uint8_t poll_ow_abort(br_response_t *resp)
 {
-    /* The library has no abort: finish the current hardware operation by
-       polling it to completion, then drop the command. */
+    /* The library has no abort for the in-flight hardware operation. This
+       command runs after that operation has finished; bridge_submit() has
+       already discarded anything that was queued behind it. */
     resp_simple(resp, BR_CMD_OW_ABORT, BR_ABORTED);
     return 1u;
 }
@@ -1052,10 +1061,14 @@ static void start_config_set(const br_command_t *cmd)
 
 static uint8_t poll_config_set(br_response_t *resp)
 {
+    if (bus.cmd.len != BR_CONFIG_SIZE) {
+        resp_simple(resp, BR_CMD_CONFIG_SET, BR_PARAM_ERROR);
+        return 1u;
+    }
     struct br_config cfg;
     memcpy(&cfg, bus.cmd.data, BR_CONFIG_SIZE);
     uint8_t ok = config_set(&cfg);
-    resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_BUS_ERROR);
+    resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_PARAM_ERROR);
     return 1u;
 }
 
@@ -1086,6 +1099,7 @@ static void start_reset(const br_command_t *cmd)
 static uint8_t poll_reset(br_response_t *resp)
 {
     resp_simple(resp, BR_CMD_RESET, BR_OK);
+    board_reset(); /* does not return; the response may not reach the host */
     return 1u;
 }
 
@@ -1211,6 +1225,7 @@ static void bus_start_next(void)
         bus.resp.cmd = cmd.cmd;
         bus.resp.len = 0u;
         resp_commit();
+        led_result(BR_INVALID_CMD);
         bus.state = BR_BUS_DONE;
         return;
     }
@@ -1231,11 +1246,19 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
     if (dlen > BR_MAX_DATA || len < (uint8_t)(2u + dlen)) {
         return 0u;
     }
+    if (cmd == BR_CMD_OW_ABORT) {
+        /* The library cannot cancel the in-flight hardware operation, but we
+           can drop everything that was queued behind it. */
+        queue_count = 0u;
+        queue_head = 0u;
+        queue_tail = 0u;
+    }
     if (queue_count >= BR_QUEUE_SIZE) {
         bus.resp.status = BR_QUEUE_FULL;
         bus.resp.cmd = cmd;
         bus.resp.len = 0u;
         resp_commit();
+        led_result(BR_QUEUE_FULL);
         return 0u;
     }
     br_command_t c;
@@ -1250,6 +1273,7 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
             bus.resp.cmd = cmd;
             bus.resp.len = 0u;
             resp_commit();
+            led_result(BR_INVALID_CMD);
             bus.state = BR_BUS_DONE;
             return 1u;
         }
@@ -1274,9 +1298,11 @@ void bridge_poll(void)
             resp_commit();
             bus.state = BR_BUS_DONE;
             stats_count(BR_STAT_COMMANDS);
+            led_result(bus.resp.status);
         }
     } else if (bus.state == BR_BUS_DONE) {
-        /* Keep the response until the host has read it, then advance. */
+        /* The response is already latched in last_resp; start the next
+           queued command. */
         bus.state = BR_BUS_IDLE;
         bus_start_next();
     }

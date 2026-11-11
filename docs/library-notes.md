@@ -1,11 +1,11 @@
 # Notes on `stm32-async-1wire` from an integration effort
 
-Library version: **v3.1.2** (git tag `248d2662`).
+Library version: **v3.1.2** (commit `248d2662`).
 Target MCU: **STM32F030F4P6**, TSSOP-20, 16 KB flash (documented) / 4 KB RAM.
 Date: 2026-11-10.
 
 The observations below were collected while building an
-`I2C/UART/GPIO <-> 1-Wire` bridge on this part. Each item follows the same
+`I2C/UART/SPI <-> 1-Wire` bridge on this part. Each item follows the same
 shape: **observation -> consequence -> suggestion**.
 
 ---
@@ -27,7 +27,7 @@ against a documented limit of 16 KB flash / 4 KB RAM.
 default (`ow_add_library` sets no optimisation flag, so the library compiles
 at `-O0`), the image does not link into the documented 16 KB:
 `region FLASH overflowed by 8312 bytes`. Compiling both at `-Os` brings the
-same UART image down to 15.5 KB, so it does fit; at `-O2` it is 20.5 KB. The
+same UART image down to 15.3 KB, so it does fit; at `-O2` it is 20.3 KB. The
 overflow we first hit was therefore mostly the helper's implicit `-O0`, not
 an inherent size floor. Even without the bridge, the library's own `9_multi`
 reference occupies 12792 B of text at `-O0`.
@@ -35,8 +35,8 @@ reference occupies 12792 B of text at `-O0`.
 **Resolution adopted here.** The F030F4P6 die actually carries **32 KB of
 flash** (the same as the F6P6); the upper 16 KB are undocumented but
 reachable. The linker script was moved to 31 KB of code plus a 1 KB
-configuration page. With `-O2` the UART image is 20.5 KB and fits
-comfortably; with `-Os` it is 15.5 KB and would fit the documented 16 KB.
+configuration page. With `-O2` the UART image is 20.3 KB and fits
+comfortably; with `-Os` it is 15.3 KB and would fit the documented 16 KB.
 This is a vendor-specific trick and should be called out in the library's
 `hardware.md` as a known fact about the F030F4P6.
 
@@ -78,9 +78,9 @@ is `PA10 (AF2, TIM1_CH3)`.
 
 **Consequence.** The hardware I2C1 and the 1-Wire bus cannot coexist on PA10.
 There is no alternative SDA pin on the F030F4P. The available workarounds are:
-- bit-bang a software I2C on free pins;
+- bit-bang a software I2C on free pins (the approach used here);
 - time-share PA10 between AF2 and AF4 (fragile; it breaks the input capture);
-- drop I2C (the choice made here);
+- drop hardware I2C and use the software slave;
 - move to a part with separate pins (F030K6T6 / C8T6).
 
 **Suggestion.** Add a "Pin conflicts on the TSSOP-20" section to
@@ -202,7 +202,7 @@ To keep this review balanced:
 `-O` flag. GCC therefore compiles the library sources at `-O0`, while the
 consumer's own application is usually built at `-Os`/`-O2`. In our image the
 unoptimised library accounted for most of the size: the UART build was
-23.7 KB at the helper's default and 15.5 KB once both library and application
+23.7 KB at the helper's default and 15.3 KB once both library and application
 used `-Os`.
 
 **Consequence.** A downstream project that follows the helper's defaults gets
@@ -219,9 +219,9 @@ three drivers, so `-O2` is the practical ceiling.
 
 | # | Blocker | Impact | Workaround |
 |---|---------|--------|------------|
-| 1 | Flash (large at `-O0`) | does not link into 16 KB at the helper default | `-O2` (20.5 KB) or `-Os` (15.5 KB) plus the undocumented 32 KB |
+| 1 | Flash (large at `-O0`) | does not link into 16 KB at the helper default | `-O2` (20.3 KB) or `-Os` (15.3 KB) plus the undocumented 32 KB |
 | 2 | No USART2 | only USART1 | PA2/PA3 (full duplex) |
-| 3 | I2C1 on PA9/PA10 | collides with the bus | software I2C / drop I2C |
+| 3 | I2C1 on PA9/PA10 | collides with the bus | software I2C on PA4/PA5 |
 | 4 | No gate hook | no external strong pull-up | patch the port (weak hook) |
 | 5 | LTO archiver | LTO silently disabled | `CMAKE_AR` CACHE FORCE |
 | 6 | CMake 3.20 | does not configure on 3.16 | lower the minimum |

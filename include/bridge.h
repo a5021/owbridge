@@ -1,19 +1,19 @@
 /**
  * @file bridge.h
- * @brief I2C/UART/GPIO <-> 1-Wire bridge core
+ * @brief I2C/UART/SPI <-> 1-Wire bridge core
  *
  * Frame protocol (identical on all three host interfaces):
  *
  *   Command:  [cmd][len][data...]
  *   Response: [status][cmd][len][data...]
  *
- * `len` is the number of data bytes (0..64). The host reads the 3-byte header
- * first, then `len` data bytes.
+ * `len` is the number of data bytes (0..BR_MAX_DATA, currently 40). The host
+ * reads the 3-byte header first, then `len` data bytes.
  *
  * A command is executed asynchronously: while the 1-Wire bus is busy the
  * response status is BR_BUSY and the host polls. Commands submitted while the
- * bus is busy are queued (up to BR_QUEUE_SIZE); BR_QUEUE_FULL is returned when
- * the queue is full.
+ * bus is busy are queued (up to BR_QUEUE_SIZE); the response status is
+ * BR_QUEUE_FULL when the queue is full.
  */
 
 #ifndef BRIDGE_H

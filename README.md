@@ -30,9 +30,10 @@ Pins common to every variant:
 | Pin | Function | Notes |
 |-----|----------|-------|
 | PA10 | 1-Wire DQ | TIM1_CH3, AF2, open-drain (owned by the library) |
-| PA9 | Strong pull-up gate | P-MOSFET gate, push-pull |
+| PA9 | Strong pull-up switch | gate-driver input, active-high, push-pull |
 | PA0 / PA1 | Status / error LED | push-pull |
-| PB1, PF0, PF1 | Config jumpers / spare | input with pull-up |
+| PB1 / PF0 | Config jumpers 0 / 1 | input with pull-up |
+| PF1 | Spare | input with pull-up |
 | PA13/PA14 | SWD | programming |
 
 Host-interface pins:
@@ -44,7 +45,8 @@ Host-interface pins:
 | I2C | PA4 = SCL (input, pull-up), PA5 = SDA (open-drain) |
 
 1-Wire power: 3.3 V with a 4.7 kOhm pull-up (externally powered devices) or
-2.2 kOhm (parasite power, with the strong pull-up on PA9 driving a P-MOSFET).
+2.2 kOhm (parasite power, with PA9 driving the strong-pull-up switch, e.g. a
+P-MOSFET through its gate driver).
 
 ## Building
 
@@ -79,7 +81,9 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `OW_SYSCLK_MHZ` | `48` | system clock |
 | `OW_PARASITE` | `ON` | parasite power |
 | `OW_MAX_DEVICES` | `16` | DS18B20 device table size |
+| `OW_LIBRARY_TAG` | `v3.1.2` | `stm32-async-1wire` git tag |
 | `OW_OPT` | `-O2` | optimisation flag, applied to the firmware **and** the library |
+| `OWBRIDGE_PROFILE` | `OFF` | one-off TIM3 I2C timing profiler (I2C build only) |
 
 ## Transport details
 
@@ -93,6 +97,26 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
   poll is deferred (with a 50 ms safety valve), so its encode/decode cannot
   drop SCL edges at 100 kHz; the 1-Wire timing is hardware-generated, so only
   the state machine is delayed.
+
+### I2C timing margin
+
+The poll rate was measured with the one-off TIM3 profiler
+(`-DOWBRIDGE_PROFILE=ON`, results read over SWD) on the 9-device bench, I2C
+build at `-O2`:
+
+| Metric | min | max | average |
+|--------|-----|-----|---------|
+| `host_i2c_soft_poll()` | 0 us | 1 us | 0.90 us |
+| `bridge_poll()` | 1 us | 2 us | 1.17 us |
+| main loop | 4 us | 5 us | 4.09 us |
+
+These numbers include the profiler's two TIM3 reads and volatile bookkeeping
+(about 1.5-2 us per iteration); the production loop is therefore about 2-3 us.
+While an I2C transaction is active `bridge_poll()` is skipped, so the busy
+loop is shorter still. The SCL half-period at 100 kHz is 5 us, so 100 kHz has
+margin; 400 kHz (1.25 us) does not. This measures polling latency only -
+protocol/ACK correctness still needs a real I2C master. Details:
+[`docs/i2c-timing.md`](docs/i2c-timing.md).
 
 ## Protocol
 
@@ -175,11 +199,15 @@ the host keeps polling the response until it becomes `OK` or an error.
 | 0x10 | `OW_CLEAR_CACHE` | - | - |
 | 0x11 | `OW_ABORT` | - | - |
 
+`OW_ABORT` cannot interrupt the library's in-flight hardware operation: it
+discards commands already queued behind it and returns `ABORTED` once the bus
+is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
+
 ### DS18B20
 
 | Code | Command | Parameters | Response |
 |------|---------|------------|----------|
-| 0x20 | `TEMP_CONVERT` | `rom[8]` or 0 | `temp x 10` |
+| 0x20 | `TEMP_CONVERT` | `rom[8]`, or 0 for broadcast | `temp x 10` for an addressed device; conversion status in broadcast mode |
 | 0x21 | `TEMP_READ` | `rom[8]` | `temp x 10` |
 | 0x22 | `TEMP_READ_ALL` | - | `temp x 10` x n |
 | 0x23 | `TEMP_SET_RES` | `rom[8]`, `bits` | - |
@@ -194,7 +222,7 @@ the host keeps polling the response until it becomes `OK` or an error.
 
 | Code | Command | Parameters | Response |
 |------|---------|------------|----------|
-| 0x30 | `EEPROM_READ` | `rom[8]`, `addr`, `len` | `data[len]` |
+| 0x30 | `EEPROM_READ` | `rom[8]`, `addr`, `len` (<= 8) | `data[len]` |
 | 0x31 | `EEPROM_WRITE` | `rom[8]`, `addr`, `data` | - |
 | 0x32 | `EEPROM_READ_S` | `rom[8]` | `data[11]` |
 
@@ -207,14 +235,14 @@ the host keeps polling the response until it becomes `OK` or an error.
 
 ### Service
 
-| Code | Command | Response |
-|------|---------|----------|
-| 0x50 | `CONFIG_GET` | `config[40]` |
-| 0x51 | `CONFIG_SET` | - |
-| 0x52 | `FIRMWARE_VER` | version string |
-| 0x53 | `RESET` | - |
-| 0x54 | `STATS_GET` | 7 x u32 + uptime |
-| 0x55 | `STATS_RESET` | - |
+| Code | Command | Parameters | Response |
+|------|---------|------------|----------|
+| 0x50 | `CONFIG_GET` | - | `config[40]` |
+| 0x51 | `CONFIG_SET` | `config[40]` | - |
+| 0x52 | `FIRMWARE_VER` | - | version string |
+| 0x53 | `RESET` | - | - (the MCU reboots; the response may be lost) |
+| 0x54 | `STATS_GET` | - | 7 x u32 + uptime |
+| 0x55 | `STATS_RESET` | - | - |
 
 ## Configuration
 
@@ -222,8 +250,9 @@ Stored in the last flash page (`0x08007C00`, 1 KB). The structure is 40 bytes
 with the `OWBR` magic and a CRC-32. If the page is not valid, the defaults are
 written.
 
-Fields: `i2c_addr`, `uart_baud`, `timing`, `parasite`, `strong_pullup`,
-`auto_search`, `max_devices`, `led_enable`.
+Fields: `i2c_addr`, `uart_baud`, `timing` (stored, informational), `parasite`,
+`strong_pullup`, `auto_search` (reserved), `max_devices` (reserved; the cache
+size is the compile-time `OW_MAX_DEVICES`), `led_enable`.
 
 `parasite` defaults to **1**: the strong pull-up is harmless for externally
 powered devices, so the same image works on both bus types. The host can
@@ -233,18 +262,20 @@ override it at runtime with `OW_SET_POWER`.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 20 480 B | 2 552 B |
-| SPI | 16 828 B | 2 328 B |
-| I2C | 17 032 B | 2 336 B |
+| UART | 20 772 B | 2 548 B |
+| SPI | 17 116 B | 2 328 B |
+| I2C | 17 572 B | 2 336 B |
 
-All fit the 31 KB code region and the 4 KB RAM (1 KB stack reserved).
+All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
+stack; about 1.5 KB remains below the 4 KB limit. The linker script defines
+`_Min_Stack_Size` as a budget but does not enforce it.
 
-The library is compiled with the same `OW_OPT` as the firmware. The vendored
-helper leaves the optimisation level unset (GCC then defaults to `-O0`), so
-setting `-O2` explicitly is the single largest code-size and speed win: the
-UART image drops from about 23.7 KB at the library's implicit `-O0` to 20.5 KB
-at `-O2`, and to 15.5 KB with `-Os`. `-O3` does not fit (it overflows the code
-region), so `-O2` is the recommended default.
+The library is compiled with the same `OW_OPT` as the firmware. The fetched
+`ow_add_library.cmake` helper leaves the optimisation level unset (GCC then
+defaults to `-O0`), so setting `-O2` explicitly is the single largest code-size
+and speed win: the UART image drops from about 23.7 KB at the library's
+implicit `-O0` to 20.3 KB at `-O2`, and to 15.3 KB with `-Os`. `-O3` does not
+fit (it overflows the code region), so `-O2` is the recommended default.
 
 ## Hardware test results
 
@@ -265,7 +296,8 @@ Verified on a bench with a 1-Wire bus carrying 7 x DS18B20, 1 x DS2431 and
 | AT commands (UART build) | all eight; `AT+TEMP` takes about 1 s |
 
 The UART build was exercised end to end. The SPI and I2C builds compile and
-fit; their hardware test needs an external SPI/I2C master.
+fit; their protocol test needs an external SPI/I2C master. The I2C polling
+latency was measured with the TIM3 profiler (see above).
 
 ## Source layout
 
@@ -277,6 +309,7 @@ src/protocol.c      CRC-8
 src/cache.c         ROM cache (16 devices)
 src/config.c        configuration in flash
 src/stats.c         error counters
+src/profile.c       one-off TIM3 I2C timing profiler (OWBRIDGE_PROFILE)
 src/host_uart.c     USART1: DMA TX/RX, binary protocol and AT commands
 src/host_spi.c      SPI1 slave, polled RXNE/TXE
 src/host_i2c_soft.c software I2C slave, polled SCL/SDA edges

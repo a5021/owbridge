@@ -4,6 +4,7 @@
  */
 
 #include "config.h"
+#include "cache.h"
 
 #include "stm32f0xx.h"
 
@@ -97,10 +98,12 @@ static void config_defaults(struct br_config *cfg)
     cfg->timing = 0u;        /* STANDARD */
     cfg->parasite = 1u;      /* safe for both parasite and externally powered buses */
     cfg->strong_pullup = 1u;
-    cfg->auto_search = 1u;
-    cfg->max_devices = 16u;
+    cfg->auto_search = 0u;   /* reserved */
+    cfg->max_devices = 16u;  /* reserved */
     cfg->led_enable = 1u;
 }
+
+static uint8_t config_fields_valid(const struct br_config *cfg);
 
 static uint8_t config_valid(const struct br_config *cfg)
 {
@@ -110,8 +113,26 @@ static uint8_t config_valid(const struct br_config *cfg)
     if (cfg->version != BR_CONFIG_VERSION) {
         return 0u;
     }
+    if (!config_fields_valid(cfg)) {
+        return 0u;
+    }
     uint32_t crc = config_crc32((const uint8_t *)cfg, BR_CONFIG_SIZE - 4u);
     return (crc == cfg->crc32) ? 1u : 0u;
+}
+
+static uint8_t config_fields_valid(const struct br_config *cfg)
+{
+    if (cfg->i2c_addr < 0x08u || cfg->i2c_addr > 0x77u) {
+        return 0u;
+    }
+    if (cfg->uart_baud >= BAUD_TABLE_LEN) {
+        return 0u;
+    }
+    if (cfg->parasite > 1u || cfg->strong_pullup > 1u ||
+        cfg->led_enable > 1u) {
+        return 0u;
+    }
+    return 1u;
 }
 
 void config_init(void)
@@ -136,7 +157,7 @@ const struct br_config *config_get(void)
 
 uint8_t config_set(const struct br_config *cfg)
 {
-    if (cfg == 0) {
+    if (cfg == 0 || !config_fields_valid(cfg)) {
         return 0u;
     }
     struct br_config tmp = *cfg;
@@ -146,6 +167,9 @@ uint8_t config_set(const struct br_config *cfg)
 
     flash_erase_page(CONFIG_ADDR);
     flash_program(CONFIG_ADDR, (const uint8_t *)&tmp, BR_CONFIG_SIZE);
+    if (!config_valid((const struct br_config *)CONFIG_ADDR)) {
+        return 0u;
+    }
     memcpy(&config_ram, &tmp, sizeof(tmp));
     return 1u;
 }

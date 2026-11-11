@@ -87,7 +87,7 @@ set(CMSIS_STARTUP_ASM    "${cmsis_device_f0_SOURCE_DIR}/Source/Templates/gcc/sta
 set(OW_LINKER_SCRIPT     "${CMAKE_CURRENT_SOURCE_DIR}/linker/STM32F030X6_FLASH.ld")
 
 # ---------------------------------------------------------------------------
-# Library (vendored-source helper, sources fetched into _deps)
+# Library (sources fetched into _deps; helper script from the library)
 # ---------------------------------------------------------------------------
 include(${stm32_async_1wire_SOURCE_DIR}/cmake/ow_add_library.cmake)
 
@@ -157,4 +157,13 @@ target_link_options(owbridge PRIVATE
     -Wl,-Map=${CMAKE_BINARY_DIR}/owbridge.map
     --specs=nano.specs
     -lc -lm -lnosys
+)
+
+# Flashable images next to the ELF (the README documents these outputs).
+add_custom_command(TARGET owbridge POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:owbridge>
+            ${CMAKE_BINARY_DIR}/owbridge.bin
+    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:owbridge>
+            ${CMAKE_BINARY_DIR}/owbridge.hex
+    COMMENT "Generating owbridge.bin and owbridge.hex"
 )

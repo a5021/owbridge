@@ -12,8 +12,13 @@
  *
  * The main loop polls the two lines, detects START/STOP and the SCL edges,
  * and runs a small state machine. No EXTI, no DMA (GPIO edges cannot trigger
- * DMA). The achievable clock is set by the main-loop latency; at ~2 us per
- * iteration 100 kHz has a comfortable margin.
+ * DMA). While a transaction is active the main loop defers the 1-Wire poll
+ * (with a 50 ms safety valve), so this poll runs at the full loop rate.
+ *
+ * Measured with the one-off TIM3 profiler (see docs/i2c-timing.md): the poll
+ * itself takes 0.9 us on average and at most 1 us, and the full loop stays at
+ * or below 5 us even with the profiler enabled; without it the loop is about
+ * 2-3 us. The SCL half-period at 100 kHz is 5 us, so that rate has margin.
  */
 
 #include "host_i2c_soft.h"

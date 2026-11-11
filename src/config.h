@@ -2,10 +2,10 @@
  * @file config.h
  * @brief Bridge configuration, stored in the last flash page
  *
- * The config page is at 0x08003C00 (1 KB, reserved by the linker script).
+ * The config page is at 0x08007C00 (1 KB, reserved by the linker script).
  * The structure is 40 bytes; the last field is a CRC-32 over the preceding
- * 36 bytes. A page that fails the magic or the CRC is treated as erased and
- * the defaults are written.
+ * 36 bytes. A page that fails the magic, the version, a field range check or
+ * the CRC is treated as erased and the defaults are written.
  */
 
 #ifndef BR_CONFIG_H
@@ -29,8 +29,8 @@ struct br_config {
     uint8_t  timing;       /* timing preset index (informational) */
     uint8_t  parasite;     /* default parasite power mode */
     uint8_t  strong_pullup;/* external strong pull-up gate present */
-    uint8_t  auto_search;  /* search devices at startup */
-    uint8_t  max_devices;  /* ROM cache size */
+    uint8_t  auto_search;  /* reserved; automatic search is not implemented */
+    uint8_t  max_devices;  /* reserved; the cache size is BR_CACHE_MAX */
     uint8_t  led_enable;   /* status/error LEDs */
     uint8_t  reserved[22];
     uint32_t crc32;
@@ -42,7 +42,8 @@ void config_init(void);
 /** @brief Pointer to the in-RAM copy of the config */
 const struct br_config *config_get(void);
 
-/** @brief Validate, write to flash and update the in-RAM copy */
+/** @brief Validate the fields, write to flash and update the in-RAM copy
+ *  @return 1 on success, 0 on invalid fields or a failed flash write */
 uint8_t config_set(const struct br_config *cfg);
 
 /** @brief Baud rate for a config uart_baud index */

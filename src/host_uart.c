@@ -348,7 +348,11 @@ static void uart_decode(uint8_t b)
         rx_frame[1] = b;
         rx_len = b;
         rx_idx = 2u;
-        rx_state = (rx_len > 0u) ? 4u : 5u;
+        if (rx_len > BR_MAX_DATA) {
+            rx_state = 0u; /* oversized frame: drop it before the CRC read */
+        } else {
+            rx_state = (rx_len > 0u) ? 4u : 5u;
+        }
         break;
     case 4u:
         if (rx_idx < sizeof(rx_frame)) {
