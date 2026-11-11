@@ -326,6 +326,10 @@ host-side gap for the instant commands. 400 kHz was tried and is not supported
 by the polled slave; 100 kHz is the validated rate. The SPI build compiles and
 fits; its protocol test still needs an external SPI master.
 
+An 18-minute I2C load test (77 286 bulk 163-byte reads, 202 777 transactions,
+zero errors and zero resets) is documented in
+[`docs/i2c-stress-test.md`](docs/i2c-stress-test.md).
+
 ## Source layout
 
 ```
