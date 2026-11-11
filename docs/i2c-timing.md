@@ -52,32 +52,36 @@ time.
 
 ## Command turnaround after STOP
 
-The table above measures polling latency while the bus is idle or transferring
-bytes. Completing a command is a separate interval: after the STOP of a write,
-the main loop runs `bridge_poll()`, which latches the response. Measured on
-the same bench with a SysTick counter around that call, the longest
-`bridge_poll()` during a `FIRMWARE_VER` command was about **20 us** (979
-counts at 48 MHz).
+The first implementation copied the response twice (poll into `bus.resp.data`,
+then into `last_resp`), used the byte-wise libc `memcpy`, and searched a
+38-entry table to dispatch the command. The whole STOP-to-response path took
+about **20 us**, while a CH341A chains a write and a read with a 15 us
+STOP-to-START gap. The read address therefore arrived before the bridge was
+ready and was NACKed.
 
-This matters for a master that chains a write and a read. A CH341A at 100 kHz
-issues the read START only **15 us** after the write STOP when the two calls
-are queued back to back. That is shorter than the 20 us command turnaround, so
-the read address can arrive while the bridge is still running the command and
-the slave will NACK it. With a host-side gap the bus STOP-to-START interval
-grows (200 us host delay produced a 78 us bus gap on this adapter) and the
-read is acknowledged.
+The current path removes each of those costs:
 
-The firmware-side fix for the data path was to stop copying the response into
-a local TX buffer inside the ACK falling-edge handler. `bridge_get_response()`
-performed a `memcpy` of up to 163 bytes there, which outlasts the SCL low
-phase and made the master sample the first data bit as released. The slave now
-transfers directly from the bridge's latched buffer (`bridge_response_ptr()`),
-which is stable for the whole transaction because `bridge_poll()` is deferred
-while the bus is busy.
+- dispatch is a 256-entry table indexed by the command byte (no linear scan);
+- the command frame is copied directly into the bus slot, without the old
+  42-byte struct copy;
+- the poll functions write straight into `last_resp + 3`, so `resp_commit()`
+  only updates the three header bytes;
+- `fast_copy()` uses 32-bit moves when both sides are aligned and a four-byte
+  unrolled byte loop otherwise. `-fno-tree-loop-distribute-patterns` keeps GCC
+  from turning those loops back into libc `memcpy` calls;
+- instant commands complete inside `bridge_submit()` before the STOP handler
+  returns; long commands start their engine at STOP, latch `BUSY`, and are
+  completed by the main-loop poll.
 
-Host rule: after a command write, wait at least ~200 us, or poll the 3-byte
-header and treat an unacknowledged/`0xFF` read as "not ready" and retry. The
-`BUSY` status remains the intended mechanism for long 1-Wire operations.
+Measured worst case for an instant command (`OW_GET_DEVICES` with nine cached
+ROMs, 72 response bytes) is about **10 us** from STOP detection to the latched
+response (489 SysTick counts at 48 MHz). `FIRMWARE_VER` is about 5 us. The
+CH341A 15 us turnaround is therefore serviced without a host-side gap; only
+long 1-Wire operations still use the `BUSY`/poll flow.
+
+Host rule: no mandatory gap for instant commands. For long operations, poll
+the 3-byte header until the status is not `BUSY`; a NACK/`0xFF` still means
+"not ready" and can be retried.
 
 ## Validation
 
@@ -85,5 +89,14 @@ The I2C variant was tested with a CH341A master (`CH341SetStream(0, 1)`,
 100 kHz) and a Saleae-compatible logic analyzer (D1 = SDA, D2 = SCL). The
 analyzer decodes the write frame `30 / 52 / 00`, the read frame `30`, and
 every ACK. The full command set listed in the README returns well-formed
-responses. Clock stretching and repeated START are not used by this protocol
-and were not exercised.
+responses. `gap = 0` (the CH341A's 15 us turnaround) was exercised for
+`FIRMWARE_VER`, `OW_GET_COUNT`, `OW_GET_STATUS`, `OW_GET_DEVICES` with a
+populated cache, `STATS_GET` and `CONFIG_GET`. Back-to-back BUSY polling with
+no host delay also completed `OW_RESET` in 3 ms, `OW_SEARCH` in 371 ms and
+`TEMP_READ_ALL` in 188 ms, so starting the 1-Wire engine at STOP does not
+starve it when the host reads continuously.
+
+A 400 kHz run NACKed even the write address: the polled slave needs the 5 us
+half-period of 100 kHz, and 1.25 us at 400 kHz is too short for this software
+edge sampler. 100 kHz is the validated rate. Clock stretching and repeated
+START are not used by this protocol and were not exercised.

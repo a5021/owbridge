@@ -105,14 +105,15 @@ enum {
 typedef struct {
     uint8_t cmd;
     uint8_t len;
+    uint8_t pad[2];   /**< keeps data[] word-aligned for fast_copy() */
     uint8_t data[BR_MAX_DATA];
-} br_command_t;
+} __attribute__((aligned(4))) br_command_t;
 
 typedef struct {
     uint8_t status;
     uint8_t cmd;
     uint8_t len;
-    uint8_t data[BR_MAX_RESP];
+    uint8_t *data;    /**< points at the response data area in bridge.c */
 } br_response_t;
 
 /* --- API ------------------------------------------------------------------ */

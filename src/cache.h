@@ -23,6 +23,14 @@ uint8_t cache_count(void);
 /** @brief Get a cached ROM (8 bytes, LSB first), or NULL when out of range */
 const uint8_t *cache_get(uint8_t index);
 
+/**
+ * @brief Start of the dense ROM array (8 bytes per entry)
+ *
+ * Entries are contiguous, so a range of ROMs can be copied with a single
+ * fast_copy() instead of one cache_get() call per device.
+ */
+const uint8_t *cache_roms(void);
+
 /** @brief Add a ROM (silently ignored when the cache is full) */
 void cache_add(const uint8_t *rom);
 

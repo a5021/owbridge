@@ -5,9 +5,11 @@
 
 #include "cache.h"
 
+#include "fast_copy.h"
+
 #include <string.h>
 
-static uint8_t cache_rom[BR_CACHE_MAX][8];
+static uint8_t cache_rom[BR_CACHE_MAX][8] __attribute__((aligned(4)));
 static uint8_t cache_count_;
 
 void cache_clear(void)
@@ -28,6 +30,11 @@ const uint8_t *cache_get(uint8_t index)
     return cache_rom[index];
 }
 
+const uint8_t *cache_roms(void)
+{
+    return &cache_rom[0][0];
+}
+
 void cache_add(const uint8_t *rom)
 {
     if (rom == 0 || cache_count_ >= BR_CACHE_MAX) {
@@ -36,7 +43,7 @@ void cache_add(const uint8_t *rom)
     if (cache_has(rom)) {
         return;
     }
-    memcpy(cache_rom[cache_count_], rom, 8u);
+    fast_copy(cache_rom[cache_count_], rom, 8u);
     cache_count_++;
 }
 

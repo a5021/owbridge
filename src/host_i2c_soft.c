@@ -54,7 +54,10 @@ static uint8_t ack;
 static uint8_t ack_phase;
 static uint8_t rw;
 
-static uint8_t rx_buf[I2C_RX_BUF];
+/* Offset by two bytes so the command data (frame + 2) is word-aligned: the
+   first two positions hold the command byte and the data length. */
+static uint8_t rx_storage[2u + I2C_RX_BUF] __attribute__((aligned(4)));
+#define rx_buf (rx_storage + 2u)
 static uint8_t rx_idx;
 
 /* The response is read straight from the bridge buffer. The bridge defers
@@ -87,6 +90,10 @@ static inline void i2c_start(void)
 static inline void i2c_stop(void)
 {
     if (state == I2C_RX && rx_idx >= 2u) {
+        /* Instant commands are latched here. Long 1-Wire commands start their
+           engine and latch BUSY here; the main-loop poll completes them, so
+           the STOP handler stays short enough for a 15 us STOP->START
+           turnaround. */
         bridge_submit(rx_buf, rx_idx);
     }
     state = I2C_IDLE;
@@ -234,6 +241,12 @@ void host_i2c_soft_poll(void)
     uint32_t idr = GPIOA->IDR;
     uint8_t scl = (uint8_t)((idr >> SCL_PIN) & 1u);
     uint8_t sda = (uint8_t)((idr >> SDA_PIN) & 1u);
+
+    /* Fast path: most polls see no line change. Returning immediately keeps
+       the sampling period short and reduces STOP detection latency. */
+    if (scl == last_scl && sda == last_sda) {
+        return;
+    }
 
     /* START/STOP: SDA edge while SCL is high. */
     if (sda != last_sda && scl) {

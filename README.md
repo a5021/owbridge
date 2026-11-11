@@ -99,7 +99,9 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
   the state machine is delayed. A read transfers the response straight from
   the bridge's latched buffer; there is no `memcpy` in the SCL edge handler,
   because a copy of up to 163 bytes would outlast the 5 us low phase of a
-  100 kHz clock.
+  100 kHz clock. The dispatcher is a 256-entry table indexed by the command
+  byte, commands are copied straight into the bus slot, and the hot copies are
+  inline 32-bit moves (`fast_copy()`), not the byte-wise libc `memcpy`.
 
 ### I2C timing margin
 
@@ -121,18 +123,19 @@ margin; 400 kHz (1.25 us) does not.
 
 ### I2C host turnaround
 
-The slave is polled, not interrupt-driven, so after the STOP of a command
-write it needs about 20 us to run the command and latch the response. The
-CH341A, when a write is immediately followed by a read, chains the two
-transactions with a fixed ~15 us STOP-to-START gap; the address phase can
-therefore start before the bridge is ready, and the slave would NACK it.
+The command handler is short enough to survive the CH341A's ~15 us
+STOP-to-START turnaround. Instant commands (version, cached queries, config,
+stats) are completed inside `bridge_submit()` before the STOP handler returns,
+so the read that follows immediately sees the final response. Long 1-Wire
+commands start their engine at STOP and latch `BUSY`; the main-loop poll
+completes them, so the address is always acknowledged and the host polls the
+response as usual.
 
-A host must either insert a short gap after a command write (200 us is
-comfortable) or treat an unacknowledged/`0xFF` read as "not ready" and retry.
-The protocol already exposes `BUSY` for long operations, so polling the
-3-byte header until the status is no longer `BUSY` is the intended flow.
-This behaviour was measured with a CH341A at 100 kHz and a logic analyzer;
-details: [`docs/i2c-timing.md`](docs/i2c-timing.md).
+Measured worst case for an instant command on the 9-device bench: about 10 us
+from STOP detection to the latched response. No host-side gap is required:
+`gap = 0` on the CH341A works for `FIRMWARE_VER`, `OW_GET_COUNT`,
+`OW_GET_STATUS`, `OW_GET_DEVICES` (with a populated cache), `STATS_GET` and
+`CONFIG_GET`. Details: [`docs/i2c-timing.md`](docs/i2c-timing.md).
 
 ## Protocol
 
@@ -278,20 +281,22 @@ override it at runtime with `OW_SET_POWER`.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 20 772 B | 2 548 B |
-| SPI | 17 116 B | 2 328 B |
-| I2C | 17 588 B | 2 176 B |
+| UART | 24 880 B | 2 412 B |
+| SPI | 21 532 B | 2 192 B |
+| I2C | 21 668 B | 2 040 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
-stack; about 1.5 KB remains below the 4 KB limit. The linker script defines
-`_Min_Stack_Size` as a budget but does not enforce it.
+stack; about 1.6-2.0 KB remains below the 4 KB limit. The linker script
+defines `_Min_Stack_Size` as a budget but does not enforce it.
 
-The library is compiled with the same `OW_OPT` as the firmware. The fetched
-`ow_add_library.cmake` helper leaves the optimisation level unset (GCC then
-defaults to `-O0`), so setting `-O2` explicitly is the single largest code-size
-and speed win: the UART image drops from about 23.7 KB at the library's
-implicit `-O0` to 20.3 KB at `-O2`, and to 15.3 KB with `-Os`. `-O3` does not
-fit (it overflows the code region), so `-O2` is the recommended default.
+The library keeps `OW_OPT` (`-O2`), while the firmware adds `-flto`,
+`-ffunction-sections/-fdata-sections` and
+`-fno-tree-loop-distribute-patterns`. The last one matters: without it GCC
+turns the explicit 32-bit copy loops in `fast_copy()` back into calls to the
+byte-wise libc `memcpy`. A firmware-only `-O3` build also fits (about 28.8 KB)
+but made the instant command path slower on the Cortex-M0, so `-O2` is kept.
+`-Os` shrinks the image further if flash ever becomes tight; the 256-entry
+command map and the inlined copies are a deliberate flash-for-speed trade.
 
 ## Hardware test results
 
@@ -316,9 +321,10 @@ end through a CH341A USB-I2C master at 100 kHz (address `0x30`) with a logic
 analyzer: `FIRMWARE_VER`, `OW_RESET`, `OW_SEARCH`, `OW_GET_COUNT`,
 `OW_GET_DEVICES`, `OW_GET_STATUS`, `STATS_GET` and `TEMP_READ_ALL` all return
 well-formed frames, and the analyzer decodes the write/read transactions and
-every ACK. The SPI build compiles and fits; its protocol test still needs an
-external SPI master. The I2C polling latency was measured with the TIM3
-profiler (see above).
+every ACK. The CH341A's ~15 us write-to-read turnaround now works without any
+host-side gap for the instant commands. 400 kHz was tried and is not supported
+by the polled slave; 100 kHz is the validated rate. The SPI build compiles and
+fits; its protocol test still needs an external SPI master.
 
 ## Source layout
 

@@ -148,7 +148,17 @@ target_include_directories(owbridge PRIVATE
     ${CMSIS_CORE_INCLUDE}
     ${CMSIS_DEVICE_INCLUDE}
 )
-target_compile_options(owbridge PRIVATE ${OW_OPT} -flto -ffunction-sections -fdata-sections)
+# Flash is plentiful (31 KB code region), so the firmware - not the fetched
+# library - gets the hot-path options: aligned functions/loops and no
+# loop-to-memcpy conversion. The library keeps OW_OPT; its timing is
+# hardware-driven. A firmware-only -O3 build fits but was slower on the
+# Cortex-M0, so it is deliberately not used.
+target_compile_options(owbridge PRIVATE ${OW_OPT} -flto
+    -ffunction-sections -fdata-sections
+    -falign-functions=4 -falign-loops=4
+    # Keep the explicit word/4-byte loops in fast_copy(): GCC otherwise
+    # recognises them as memcpy and calls the slow byte-wise libc routine.
+    -fno-tree-loop-distribute-patterns)
 target_link_libraries(owbridge PRIVATE owlib)
 target_link_options(owbridge PRIVATE
     -T${OW_LINKER_SCRIPT}

@@ -19,7 +19,7 @@
 #include "ds2431.h"
 #include "ds2413.h"
 
-#include <string.h>
+#include "fast_copy.h"
 
 /* --- Bus state ------------------------------------------------------------ */
 
@@ -30,13 +30,14 @@ typedef enum {
 } br_bus_state_t;
 
 typedef struct {
-    uint8_t cmd;
     void (*start)(const br_command_t *cmd);
     uint8_t (*poll)(br_response_t *resp);
+    uint8_t instant;   /**< poll() completes on the first call (RAM-only) */
 } br_cmd_desc_t;
 
 typedef struct {
     br_bus_state_t state;
+    uint8_t account_pending;
     br_command_t cmd;
     br_response_t resp;
     const br_cmd_desc_t *desc;
@@ -47,7 +48,15 @@ static br_bus_t bus;
 
 /* --- Last response (decoupled from the bus state machine) ----------------- */
 
-static uint8_t last_resp[3u + BR_MAX_RESP];
+/* The frame starts one byte into the storage so that last_resp + 3 (the data
+   area) is word-aligned: fast_copy() can then use 32-bit moves even though the
+   header itself is byte-sized. */
+static union {
+    uint32_t align;
+    uint8_t bytes[4u + 3u + BR_MAX_RESP];
+} last_resp_store;
+#define last_resp (last_resp_store.bytes + 1u)
+
 static uint8_t last_resp_len;
 static uint8_t last_resp_seq;
 
@@ -55,22 +64,21 @@ static uint8_t last_resp_seq;
    raw-command pulse buffers share one allocation. This is what keeps the
    bridge inside the 4 KB RAM of the F030F4. */
 static ow_pulse_t shared_pulse[BR_MAX_DATA * 8u + 1u];
-static uint8_t shared_read[BR_MAX_DATA * 8u];
-static uint8_t shared_payload[BR_MAX_DATA];
+static uint8_t shared_read[BR_MAX_DATA * 8u] __attribute__((aligned(4)));
+static uint8_t shared_payload[BR_MAX_DATA] __attribute__((aligned(4)));
 
-static void resp_commit(void)
+static inline void resp_commit(void)
 {
+    /* The command poll writes directly into last_resp + 3 (bus.resp.data), so
+       committing the response only updates the three header bytes. */
     last_resp[0] = bus.resp.status;
     last_resp[1] = bus.resp.cmd;
     last_resp[2] = bus.resp.len;
-    if (bus.resp.len > 0u) {
-        memcpy(last_resp + 3u, bus.resp.data, bus.resp.len);
-    }
     last_resp_len = (uint8_t)(3u + bus.resp.len);
     last_resp_seq++;
 }
 
-static void resp_busy(uint8_t cmd)
+static inline void resp_busy(uint8_t cmd)
 {
     bus.resp.status = BR_BUSY;
     bus.resp.cmd = cmd;
@@ -83,6 +91,36 @@ static void led_result(uint8_t status)
 {
     if (config_get()->led_enable) {
         board_led_error((status == BR_OK) ? 0u : 1u);
+    }
+}
+
+/* Latch the response and account for a finished command. Used both by the
+   deferred main-loop poll and by the immediate poll in bridge_submit(), so an
+   instant command never has to pass through a visible BUSY state. */
+static inline void bus_finish_command(void)
+{
+    /* Latch the response first. Statistics and the LED are not part of the
+       response, so they are accounted from the main loop; this keeps the
+       I2C STOP handler short enough for a fast STOP->START turnaround. */
+    resp_commit();
+    bus.state = BR_BUS_DONE;
+    bus.account_pending = 1u;
+}
+
+/* Arm a command. The start is always executed here: it is cheap (it only
+   programs the 1-Wire engine) and starting it at STOP means BUSY polling by
+   the host cannot starve the operation. Instant commands additionally run
+   their poll so the response is ready before the next I2C START; for long
+   commands the poll runs in the main loop, keeping the STOP handler short. */
+static inline void bus_begin_command(const br_cmd_desc_t *desc, uint8_t cmd)
+{
+    bus.desc = desc;
+    bus.state = BR_BUS_BUSY;
+    desc->start(&bus.cmd);
+    if (desc->instant && desc->poll(&bus.resp)) {
+        bus_finish_command();
+    } else {
+        resp_busy(cmd);
     }
 }
 
@@ -278,7 +316,7 @@ static void start_ow_match(const br_command_t *cmd)
     if (match_payload_len > BR_MAX_DATA) {
         match_payload_len = 0u;
     }
-    memcpy(shared_payload, cmd->data + 8u, match_payload_len);
+    fast_copy(shared_payload, cmd->data + 8u, match_payload_len);
     match_step = 0u;
     /* reset */
     onewire_reset(match_reset_pulses);
@@ -294,7 +332,7 @@ static uint8_t poll_ow_match(br_response_t *resp)
         {
             uint8_t buf[9];
             buf[0] = ONEWIRE_MATCH_ROM;
-            memcpy(buf + 1u, bus.cmd.data, 8u);
+            fast_copy(buf + 1u, bus.cmd.data, 8u);
             encode_bytes(shared_pulse, buf, 9u);
             onewire_write_slots(shared_pulse, 72u);
         }
@@ -329,7 +367,7 @@ static uint16_t skip_reset_pulses[2];
 
 static void start_ow_skip(const br_command_t *cmd)
 {
-    memcpy(shared_payload, cmd->data, cmd->len);
+    fast_copy(shared_payload, cmd->data, cmd->len);
     skip_step = 0u;
     onewire_reset(skip_reset_pulses);
 }
@@ -517,15 +555,19 @@ static void start_ow_get_devices(const br_command_t *cmd)
 
 static uint8_t poll_ow_get_devices(br_response_t *resp)
 {
+    uint8_t total = cache_count();
     uint8_t offset = (bus.cmd.len > 0u) ? bus.cmd.data[0] : 0u;
-    uint8_t count = (bus.cmd.len > 1u) ? bus.cmd.data[1] : cache_count();
-    uint8_t n = 0u;
-    for (uint8_t i = offset; i < cache_count() && n < count; i++) {
-        const uint8_t *rom = cache_get(i);
-        if (rom != 0) {
-            memcpy(&resp->data[n * 8u], rom, 8u);
-            n++;
-        }
+    uint8_t count = (bus.cmd.len > 1u) ? bus.cmd.data[1] : total;
+    if (offset > total) {
+        offset = total;
+    }
+    uint8_t n = (uint8_t)(total - offset);
+    if (n > count) {
+        n = count;
+    }
+    if (n != 0u) {
+        fast_copy(resp->data, cache_roms() + (uint16_t)offset * 8u,
+                  (uint16_t)n * 8u);
     }
     resp->status = BR_OK;
     resp->cmd = BR_CMD_OW_GET_DEVICES;
@@ -894,7 +936,7 @@ static uint8_t poll_eeprom_read(br_response_t *resp)
     resp->status = ds2431_last_command_ok() ? BR_OK : BR_NO_DEVICE;
     resp->cmd = BR_CMD_EEPROM_READ;
     resp->len = len;
-    memcpy(resp->data, eeprom_dst, len);
+    fast_copy(resp->data, eeprom_dst, len);
     return 1u;
 }
 
@@ -976,7 +1018,7 @@ static uint8_t poll_eeprom_read_s(br_response_t *resp)
     resp->status = ds2431_last_command_ok() ? BR_OK : BR_NO_DEVICE;
     resp->cmd = BR_CMD_EEPROM_READ_S;
     resp->len = DS2431_SCRATCH_FRAME;
-    memcpy(resp->data, eeprom_scratch, DS2431_SCRATCH_FRAME);
+    fast_copy(resp->data, eeprom_scratch, DS2431_SCRATCH_FRAME);
     return 1u;
 }
 
@@ -1050,7 +1092,7 @@ static uint8_t poll_config_get(br_response_t *resp)
     resp->status = BR_OK;
     resp->cmd = BR_CMD_CONFIG_GET;
     resp->len = BR_CONFIG_SIZE;
-    memcpy(resp->data, cfg, BR_CONFIG_SIZE);
+    fast_copy(resp->data, cfg, BR_CONFIG_SIZE);
     return 1u;
 }
 
@@ -1066,7 +1108,7 @@ static uint8_t poll_config_set(br_response_t *resp)
         return 1u;
     }
     struct br_config cfg;
-    memcpy(&cfg, bus.cmd.data, BR_CONFIG_SIZE);
+    fast_copy(&cfg, bus.cmd.data, BR_CONFIG_SIZE);
     uint8_t ok = config_set(&cfg);
     resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_PARAM_ERROR);
     return 1u;
@@ -1081,11 +1123,12 @@ static void start_firmware_ver(const br_command_t *cmd)
 
 static uint8_t poll_firmware_ver(br_response_t *resp)
 {
-    static const char ver[] = "owbridge 1.0.0 (lib 3.1.2)";
+    static const uint8_t ver[] __attribute__((aligned(4))) =
+        "owbridge 1.0.0 (lib 3.1.2)";
     resp->status = BR_OK;
     resp->cmd = BR_CMD_FIRMWARE_VER;
     resp->len = (uint8_t)sizeof(ver) - 1u;
-    memcpy(resp->data, ver, resp->len);
+    fast_copy(resp->data, ver, resp->len);
     return 1u;
 }
 
@@ -1147,61 +1190,59 @@ static uint8_t poll_stats_reset(br_response_t *resp)
 /* Command table                                                            */
 /* ========================================================================= */
 
-static const br_cmd_desc_t cmd_table[] = {
-    { BR_CMD_OW_RESET,       start_ow_reset,       poll_ow_reset },
-    { BR_CMD_OW_WRITE_BYTE,  start_ow_write_byte,  poll_ow_write_byte },
-    { BR_CMD_OW_READ_BYTE,   start_ow_read_byte,   poll_ow_read_byte },
-    { BR_CMD_OW_WRITE_BYTES, start_ow_write_bytes, poll_ow_write_bytes },
-    { BR_CMD_OW_READ_BYTES,  start_ow_read_bytes,  poll_ow_read_bytes },
-    { BR_CMD_OW_MATCH_ROM,   start_ow_match,       poll_ow_match },
-    { BR_CMD_OW_SKIP_ROM,    start_ow_skip,        poll_ow_skip },
-    { BR_CMD_OW_READ_ROM,    start_ow_read_rom,    poll_ow_read_rom },
-    { BR_CMD_OW_SEARCH,      start_ow_search,      poll_ow_search },
-    { BR_CMD_OW_SEARCH_ALM,  start_ow_search_alm,  poll_ow_search_alm },
-    { BR_CMD_OW_SET_PULLUP,  start_ow_set_pullup,  poll_ow_set_pullup },
-    { BR_CMD_OW_SET_POWER,   start_ow_set_power,   poll_ow_set_power },
-    { BR_CMD_OW_GET_STATUS,  start_ow_get_status,  poll_ow_get_status },
-    { BR_CMD_OW_GET_DEVICES, start_ow_get_devices, poll_ow_get_devices },
-    { BR_CMD_OW_GET_COUNT,   start_ow_get_count,   poll_ow_get_count },
-    { BR_CMD_OW_CLEAR_CACHE, start_ow_clear_cache, poll_ow_clear_cache },
-    { BR_CMD_OW_ABORT,       start_ow_abort,       poll_ow_abort },
+/* Indexed by the command byte itself. Sixteen free kilobytes are worth far
+   more than a 2 KB table: the dispatcher becomes one shift and one load
+   instead of a linear scan over 38 entries. Unused slots stay zero, checked
+   through the non-null poll pointer. */
+static const br_cmd_desc_t cmd_map[256] = {
+    [BR_CMD_OW_RESET]       = { start_ow_reset,       poll_ow_reset },
+    [BR_CMD_OW_WRITE_BYTE]  = { start_ow_write_byte,  poll_ow_write_byte },
+    [BR_CMD_OW_READ_BYTE]   = { start_ow_read_byte,   poll_ow_read_byte },
+    [BR_CMD_OW_WRITE_BYTES] = { start_ow_write_bytes, poll_ow_write_bytes },
+    [BR_CMD_OW_READ_BYTES]  = { start_ow_read_bytes,  poll_ow_read_bytes },
+    [BR_CMD_OW_MATCH_ROM]   = { start_ow_match,       poll_ow_match },
+    [BR_CMD_OW_SKIP_ROM]    = { start_ow_skip,        poll_ow_skip },
+    [BR_CMD_OW_READ_ROM]    = { start_ow_read_rom,    poll_ow_read_rom },
+    [BR_CMD_OW_SEARCH]      = { start_ow_search,      poll_ow_search },
+    [BR_CMD_OW_SEARCH_ALM]  = { start_ow_search_alm,  poll_ow_search_alm },
+    [BR_CMD_OW_SET_PULLUP]  = { start_ow_set_pullup,  poll_ow_set_pullup,  1u },
+    [BR_CMD_OW_SET_POWER]   = { start_ow_set_power,   poll_ow_set_power,   1u },
+    [BR_CMD_OW_GET_STATUS]  = { start_ow_get_status,  poll_ow_get_status,  1u },
+    [BR_CMD_OW_GET_DEVICES] = { start_ow_get_devices, poll_ow_get_devices, 1u },
+    [BR_CMD_OW_GET_COUNT]   = { start_ow_get_count,   poll_ow_get_count,   1u },
+    [BR_CMD_OW_CLEAR_CACHE] = { start_ow_clear_cache, poll_ow_clear_cache, 1u },
+    [BR_CMD_OW_ABORT]       = { start_ow_abort,       poll_ow_abort,       1u },
 
-    { BR_CMD_TEMP_CONVERT,   start_temp_convert,   poll_temp_convert },
-    { BR_CMD_TEMP_READ,      start_temp_read,      poll_temp_read },
-    { BR_CMD_TEMP_READ_ALL,  start_temp_read_all,  poll_temp_read_all },
-    { BR_CMD_TEMP_SET_RES,   start_temp_set_res,   poll_temp_set_res },
-    { BR_CMD_TEMP_GET_RES,   start_temp_get_res,   poll_temp_get_res },
-    { BR_CMD_TEMP_SET_ALARM, start_temp_set_alarm, poll_temp_set_alarm },
-    { BR_CMD_TEMP_GET_ALARM, start_temp_get_alarm, poll_temp_get_alarm },
-    { BR_CMD_TEMP_COPY,      start_temp_copy,      poll_temp_copy },
-    { BR_CMD_TEMP_RECALL,    start_temp_recall,    poll_temp_recall },
-    { BR_CMD_TEMP_DETECT_P,  start_temp_detect_p,  poll_temp_detect_p },
+    [BR_CMD_TEMP_CONVERT]   = { start_temp_convert,   poll_temp_convert },
+    [BR_CMD_TEMP_READ]      = { start_temp_read,      poll_temp_read },
+    [BR_CMD_TEMP_READ_ALL]  = { start_temp_read_all,  poll_temp_read_all },
+    [BR_CMD_TEMP_SET_RES]   = { start_temp_set_res,   poll_temp_set_res },
+    [BR_CMD_TEMP_GET_RES]   = { start_temp_get_res,   poll_temp_get_res },
+    [BR_CMD_TEMP_SET_ALARM] = { start_temp_set_alarm, poll_temp_set_alarm },
+    [BR_CMD_TEMP_GET_ALARM] = { start_temp_get_alarm, poll_temp_get_alarm },
+    [BR_CMD_TEMP_COPY]      = { start_temp_copy,      poll_temp_copy },
+    [BR_CMD_TEMP_RECALL]    = { start_temp_recall,    poll_temp_recall },
+    [BR_CMD_TEMP_DETECT_P]  = { start_temp_detect_p,  poll_temp_detect_p },
 
-    { BR_CMD_EEPROM_READ,    start_eeprom_read,    poll_eeprom_read },
-    { BR_CMD_EEPROM_WRITE,   start_eeprom_write,   poll_eeprom_write },
-    { BR_CMD_EEPROM_READ_S,  start_eeprom_read_s,  poll_eeprom_read_s },
+    [BR_CMD_EEPROM_READ]    = { start_eeprom_read,    poll_eeprom_read },
+    [BR_CMD_EEPROM_WRITE]   = { start_eeprom_write,   poll_eeprom_write },
+    [BR_CMD_EEPROM_READ_S]  = { start_eeprom_read_s,  poll_eeprom_read_s },
 
-    { BR_CMD_IO_READ,        start_io_read,        poll_io_read },
-    { BR_CMD_IO_WRITE,       start_io_write,       poll_io_write },
+    [BR_CMD_IO_READ]        = { start_io_read,        poll_io_read },
+    [BR_CMD_IO_WRITE]       = { start_io_write,       poll_io_write },
 
-    { BR_CMD_CONFIG_GET,     start_config_get,     poll_config_get },
-    { BR_CMD_CONFIG_SET,     start_config_set,     poll_config_set },
-    { BR_CMD_FIRMWARE_VER,   start_firmware_ver,   poll_firmware_ver },
-    { BR_CMD_RESET,          start_reset,          poll_reset },
-    { BR_CMD_STATS_GET,      start_stats_get,      poll_stats_get },
-    { BR_CMD_STATS_RESET,    start_stats_reset,    poll_stats_reset },
+    [BR_CMD_CONFIG_GET]     = { start_config_get,     poll_config_get,     1u },
+    [BR_CMD_CONFIG_SET]     = { start_config_set,     poll_config_set },
+    [BR_CMD_FIRMWARE_VER]   = { start_firmware_ver,   poll_firmware_ver,   1u },
+    [BR_CMD_RESET]          = { start_reset,          poll_reset },
+    [BR_CMD_STATS_GET]      = { start_stats_get,      poll_stats_get,      1u },
+    [BR_CMD_STATS_RESET]    = { start_stats_reset,    poll_stats_reset,    1u },
 };
 
-#define CMD_TABLE_LEN (sizeof(cmd_table) / sizeof(cmd_table[0]))
-
-static const br_cmd_desc_t *find_desc(uint8_t cmd)
+static inline const br_cmd_desc_t *find_desc(uint8_t cmd)
 {
-    for (uint8_t i = 0u; i < CMD_TABLE_LEN; i++) {
-        if (cmd_table[i].cmd == cmd) {
-            return &cmd_table[i];
-        }
-    }
-    return 0;
+    const br_cmd_desc_t *d = &cmd_map[cmd];
+    return (d->poll != 0) ? d : 0;
 }
 
 /* ========================================================================= */
@@ -1215,25 +1256,30 @@ static void bus_start_next(void)
         bus.desc = 0;
         return;
     }
-    br_command_t cmd = queue[queue_head];
-    queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
-    queue_count--;
-
-    const br_cmd_desc_t *desc = find_desc(cmd.cmd);
+    br_command_t *src = &queue[queue_head];
+    uint8_t cmd = src->cmd;
+    const br_cmd_desc_t *desc = find_desc(cmd);
     if (desc == 0) {
         bus.resp.status = BR_INVALID_CMD;
-        bus.resp.cmd = cmd.cmd;
+        bus.resp.cmd = cmd;
         bus.resp.len = 0u;
+        queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
+        queue_count--;
         resp_commit();
         led_result(BR_INVALID_CMD);
         bus.state = BR_BUS_DONE;
         return;
     }
-    bus.cmd = cmd;
-    bus.desc = desc;
-    bus.state = BR_BUS_BUSY;
-    desc->start(&cmd);
-    resp_busy(cmd.cmd);
+
+    bus.cmd.cmd = cmd;
+    bus.cmd.len = src->len;
+    if (src->len != 0u) {
+        fast_copy(bus.cmd.data, src->data, src->len);
+    }
+    queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
+    queue_count--;
+
+    bus_begin_command(desc, cmd);
 }
 
 uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
@@ -1261,11 +1307,6 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
         led_result(BR_QUEUE_FULL);
         return 0u;
     }
-    br_command_t c;
-    c.cmd = cmd;
-    c.len = dlen;
-    memcpy(c.data, frame + 2u, dlen);
-
     if (bus.state == BR_BUS_IDLE && queue_count == 0u) {
         const br_cmd_desc_t *desc = find_desc(cmd);
         if (desc == 0) {
@@ -1277,14 +1318,20 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
             bus.state = BR_BUS_DONE;
             return 1u;
         }
-        bus.cmd = c;
-        bus.desc = desc;
-        bus.state = BR_BUS_BUSY;
-        desc->start(&c);
-        resp_busy(cmd);
+        bus.cmd.cmd = cmd;
+        bus.cmd.len = dlen;
+        if (dlen != 0u) {
+            fast_copy(bus.cmd.data, frame + 2u, dlen);
+        }
+        bus_begin_command(desc, cmd);
         return 1u;
     }
-    queue[queue_tail] = c;
+
+    queue[queue_tail].cmd = cmd;
+    queue[queue_tail].len = dlen;
+    if (dlen != 0u) {
+        fast_copy(queue[queue_tail].data, frame + 2u, dlen);
+    }
     queue_tail = (uint8_t)((queue_tail + 1u) % BR_QUEUE_SIZE);
     queue_count++;
     resp_busy(cmd);
@@ -1295,12 +1342,14 @@ void bridge_poll(void)
 {
     if (bus.state == BR_BUS_BUSY) {
         if (bus.desc != 0 && bus.desc->poll(&bus.resp)) {
-            resp_commit();
-            bus.state = BR_BUS_DONE;
+            bus_finish_command();
+        }
+    } else if (bus.state == BR_BUS_DONE) {
+        if (bus.account_pending) {
+            bus.account_pending = 0u;
             stats_count(BR_STAT_COMMANDS);
             led_result(bus.resp.status);
         }
-    } else if (bus.state == BR_BUS_DONE) {
         /* The response is already latched in last_resp; start the next
            queued command. */
         bus.state = BR_BUS_IDLE;
@@ -1314,7 +1363,7 @@ uint8_t bridge_get_response(uint8_t *out)
         return 0u;
     }
     if (last_resp_len > 0u) {
-        memcpy(out, last_resp, last_resp_len);
+        fast_copy(out, last_resp, last_resp_len);
     }
     return last_resp_len;
 }
@@ -1340,6 +1389,7 @@ void bridge_abort(void)
         stats_count(BR_STAT_ABORTS);
     }
     bus.state = BR_BUS_IDLE;
+    bus.account_pending = 0u;
     bus.desc = 0;
     queue_count = 0u;
     queue_head = 0u;
@@ -1366,7 +1416,9 @@ void bridge_init(void)
     config_init();
 
     bus.state = BR_BUS_IDLE;
+    bus.account_pending = 0u;
     bus.desc = 0;
+    bus.resp.data = last_resp + 3u;
     queue_head = queue_tail = queue_count = 0u;
 
     last_resp[0] = BR_OK;
