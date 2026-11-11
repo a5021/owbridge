@@ -38,7 +38,6 @@
 #define SDA_RELEASE() (GPIOA->BSRR = (1u << SDA_PIN))
 
 #define I2C_RX_BUF 80u
-#define I2C_TX_BUF (3u + BR_MAX_RESP)
 
 typedef enum {
     I2C_IDLE = 0,
@@ -58,7 +57,14 @@ static uint8_t rw;
 static uint8_t rx_buf[I2C_RX_BUF];
 static uint8_t rx_idx;
 
-static uint8_t tx_buf[I2C_TX_BUF];
+/* The response is read straight from the bridge buffer. The bridge defers
+   command processing while this transaction is active (the 50 ms safety valve
+   is the only exception, and a valid 100 kHz transaction is far shorter), so
+   the buffer stays stable for the whole read. This avoids a memcpy of up to
+   163 bytes inside the SCL edge handler: at 48 MHz that copy outlasts the
+   5 us low phase of a 100 kHz clock and makes the master sample the first
+   data bit as released. */
+static const uint8_t *tx_ptr;
 static uint8_t tx_len;
 static uint8_t tx_idx;
 static uint8_t tx_byte;
@@ -121,7 +127,7 @@ static inline void i2c_scl_rising(uint8_t sda)
                 state = I2C_IDLE; /* NACK */
             } else {
                 if (tx_idx < tx_len) {
-                    tx_byte = tx_buf[tx_idx++];
+                    tx_byte = tx_ptr[tx_idx++];
                 } else {
                     tx_byte = 0xFFu;
                 }
@@ -157,13 +163,22 @@ static inline void i2c_scl_falling(void)
                 if (!ack) {
                     state = I2C_IDLE;
                 } else if (rw) {
-                    tx_len = bridge_get_response(tx_buf);
+                    tx_ptr = bridge_response_ptr();
+                    tx_len = bridge_response_len();
                     if (tx_len == 0u) {
                         tx_len = 3u;
                     }
                     tx_idx = 0u;
-                    tx_byte = tx_buf[tx_idx++];
+                    tx_byte = tx_ptr[tx_idx++];
                     state = I2C_TX;
+                    /* The ACK bit ends on this falling edge; drive the first
+                       data bit immediately, otherwise the master samples a
+                       released (high) SDA for bit 7. */
+                    if ((tx_byte >> 7) & 1u) {
+                        SDA_RELEASE();
+                    } else {
+                        SDA_LOW();
+                    }
                 } else {
                     state = I2C_RX;
                 }
@@ -206,7 +221,8 @@ void host_i2c_soft_init(void)
     ack = 0u;
     ack_phase = 0u;
     rx_idx = 0u;
-    tx_len = 0u;
+    tx_ptr = bridge_response_ptr();
+    tx_len = bridge_response_len();
     tx_idx = 0u;
 
     last_scl = SCL_READ();

@@ -96,7 +96,10 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
   DMA (GPIO edges cannot trigger DMA). During an I2C transaction the 1-Wire
   poll is deferred (with a 50 ms safety valve), so its encode/decode cannot
   drop SCL edges at 100 kHz; the 1-Wire timing is hardware-generated, so only
-  the state machine is delayed.
+  the state machine is delayed. A read transfers the response straight from
+  the bridge's latched buffer; there is no `memcpy` in the SCL edge handler,
+  because a copy of up to 163 bytes would outlast the 5 us low phase of a
+  100 kHz clock.
 
 ### I2C timing margin
 
@@ -114,9 +117,22 @@ These numbers include the profiler's two TIM3 reads and volatile bookkeeping
 (about 1.5-2 us per iteration); the production loop is therefore about 2-3 us.
 While an I2C transaction is active `bridge_poll()` is skipped, so the busy
 loop is shorter still. The SCL half-period at 100 kHz is 5 us, so 100 kHz has
-margin; 400 kHz (1.25 us) does not. This measures polling latency only -
-protocol/ACK correctness still needs a real I2C master. Details:
-[`docs/i2c-timing.md`](docs/i2c-timing.md).
+margin; 400 kHz (1.25 us) does not.
+
+### I2C host turnaround
+
+The slave is polled, not interrupt-driven, so after the STOP of a command
+write it needs about 20 us to run the command and latch the response. The
+CH341A, when a write is immediately followed by a read, chains the two
+transactions with a fixed ~15 us STOP-to-START gap; the address phase can
+therefore start before the bridge is ready, and the slave would NACK it.
+
+A host must either insert a short gap after a command write (200 us is
+comfortable) or treat an unacknowledged/`0xFF` read as "not ready" and retry.
+The protocol already exposes `BUSY` for long operations, so polling the
+3-byte header until the status is no longer `BUSY` is the intended flow.
+This behaviour was measured with a CH341A at 100 kHz and a logic analyzer;
+details: [`docs/i2c-timing.md`](docs/i2c-timing.md).
 
 ## Protocol
 
@@ -264,7 +280,7 @@ override it at runtime with `OW_SET_POWER`.
 |---------|---------------|------------------|
 | UART | 20 772 B | 2 548 B |
 | SPI | 17 116 B | 2 328 B |
-| I2C | 17 572 B | 2 336 B |
+| I2C | 17 588 B | 2 176 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack; about 1.5 KB remains below the 4 KB limit. The linker script defines
@@ -295,9 +311,14 @@ Verified on a bench with a 1-Wire bus carrying 7 x DS18B20, 1 x DS2431 and
 | `CONFIG_GET` / `STATS_GET` | 40 / 32 bytes |
 | AT commands (UART build) | all eight; `AT+TEMP` takes about 1 s |
 
-The UART build was exercised end to end. The SPI and I2C builds compile and
-fit; their protocol test needs an external SPI/I2C master. The I2C polling
-latency was measured with the TIM3 profiler (see above).
+The UART build was exercised end to end. The I2C build was exercised end to
+end through a CH341A USB-I2C master at 100 kHz (address `0x30`) with a logic
+analyzer: `FIRMWARE_VER`, `OW_RESET`, `OW_SEARCH`, `OW_GET_COUNT`,
+`OW_GET_DEVICES`, `OW_GET_STATUS`, `STATS_GET` and `TEMP_READ_ALL` all return
+well-formed frames, and the analyzer decodes the write/read transactions and
+every ACK. The SPI build compiles and fits; its protocol test still needs an
+external SPI master. The I2C polling latency was measured with the TIM3
+profiler (see above).
 
 ## Source layout
 

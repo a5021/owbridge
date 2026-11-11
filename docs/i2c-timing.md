@@ -49,6 +49,41 @@ time.
 - While an I2C transaction is active, `bridge_poll()` is skipped (with a
   50 ms safety valve), so the busy loop is shorter than the figures above.
 - 400 kHz would need a 1.25 us half-period and is not supported.
-- This experiment measures polling latency only. ACK generation, repeated
-  START, clock stretching and the state machine still need a real I2C master
-  for validation.
+
+## Command turnaround after STOP
+
+The table above measures polling latency while the bus is idle or transferring
+bytes. Completing a command is a separate interval: after the STOP of a write,
+the main loop runs `bridge_poll()`, which latches the response. Measured on
+the same bench with a SysTick counter around that call, the longest
+`bridge_poll()` during a `FIRMWARE_VER` command was about **20 us** (979
+counts at 48 MHz).
+
+This matters for a master that chains a write and a read. A CH341A at 100 kHz
+issues the read START only **15 us** after the write STOP when the two calls
+are queued back to back. That is shorter than the 20 us command turnaround, so
+the read address can arrive while the bridge is still running the command and
+the slave will NACK it. With a host-side gap the bus STOP-to-START interval
+grows (200 us host delay produced a 78 us bus gap on this adapter) and the
+read is acknowledged.
+
+The firmware-side fix for the data path was to stop copying the response into
+a local TX buffer inside the ACK falling-edge handler. `bridge_get_response()`
+performed a `memcpy` of up to 163 bytes there, which outlasts the SCL low
+phase and made the master sample the first data bit as released. The slave now
+transfers directly from the bridge's latched buffer (`bridge_response_ptr()`),
+which is stable for the whole transaction because `bridge_poll()` is deferred
+while the bus is busy.
+
+Host rule: after a command write, wait at least ~200 us, or poll the 3-byte
+header and treat an unacknowledged/`0xFF` read as "not ready" and retry. The
+`BUSY` status remains the intended mechanism for long 1-Wire operations.
+
+## Validation
+
+The I2C variant was tested with a CH341A master (`CH341SetStream(0, 1)`,
+100 kHz) and a Saleae-compatible logic analyzer (D1 = SDA, D2 = SCL). The
+analyzer decodes the write frame `30 / 52 / 00`, the read frame `30`, and
+every ACK. The full command set listed in the README returns well-formed
+responses. Clock stretching and repeated START are not used by this protocol
+and were not exercised.
