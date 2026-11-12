@@ -10,6 +10,12 @@
  * `len` is the number of data bytes (0..BR_MAX_DATA, currently 40). The host
  * reads the 3-byte header first, then `len` data bytes.
  *
+ * Per-command payload lengths are validated in bridge_submit() against the
+ * command descriptor table before queueing: an out-of-range length or an
+ * invalid argument is answered with BR_PARAM_ERROR, an unknown command code
+ * with BR_INVALID_CMD. A frame shorter than two bytes cannot be parsed and is
+ * not answered.
+ *
  * A command is executed asynchronously: while the 1-Wire bus is busy the
  * response status is BR_BUSY and the host polls. Commands submitted while the
  * bus is busy are queued (up to BR_QUEUE_SIZE); the response status is

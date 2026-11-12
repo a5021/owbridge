@@ -33,7 +33,22 @@ typedef struct {
     void (*start)(const br_command_t *cmd);
     uint8_t (*poll)(br_response_t *resp);
     uint8_t instant;   /**< poll() completes on the first call (RAM-only) */
+    uint8_t min_len;   /**< minimum payload length accepted for the command */
+    uint8_t max_len;   /**< maximum payload length accepted for the command */
+    uint8_t flags;     /**< BR_ARG_* semantic argument checks */
 } br_cmd_desc_t;
+
+/* Semantic checks applied after the length range. They cover the few payloads
+   whose validity depends on the bytes themselves rather than on the length. */
+#define BR_ARG_ROM        0x01u  /**< data[0] is a nonzero ROM family code */
+#define BR_ARG_ALL_OR_ROM 0x02u  /**< len is 0 (broadcast) or 8 + nonzero ROM */
+#define BR_ARG_READ_N     0x04u  /**< data[0] in 1..ONEWIRE_MAX_READ_BYTES */
+#define BR_ARG_RES_BITS   0x08u  /**< data[8] in DS18B20_RES_MIN..DS18B20_RES_MAX */
+#define BR_ARG_BOOL       0x10u  /**< data[0] is 0 or 1 */
+#define BR_ARG_EEPROM_N   0x20u  /**< data[9] in 1..DS2431_READ_PASS */
+
+/* Keeps the descriptor initializers in field order. */
+#define BR_DESC(s, p, inst, mn, mx, fl) { (s), (p), (inst), (mn), (mx), (fl) }
 
 typedef struct {
     br_bus_state_t state;
@@ -96,6 +111,66 @@ static void led_result(uint8_t status)
     if (config_get()->led_enable) {
         board_led_error((status == BR_OK) ? 0u : 1u);
     }
+}
+
+/* Reject a frame whose command or parameters are invalid. The response is
+   written straight into the slot: bus.resp belongs to the command in flight
+   (its poll writes into last_resp + 3), so touching it here would corrupt a
+   running command's result. */
+static void latch_reject(uint8_t cmd, uint8_t status)
+{
+    last_resp[0] = status;
+    last_resp[1] = cmd;
+    last_resp[2] = 0u;
+    last_resp_len = 3u;
+    last_resp_seq++;
+    led_result(status);
+}
+
+static inline uint8_t desc_len_ok(const br_cmd_desc_t *d, uint8_t len)
+{
+    return (len >= d->min_len && len <= d->max_len) ? 1u : 0u;
+}
+
+/* Only called after desc_len_ok(), so data[8]/data[9] are in range whenever
+   the corresponding flag is set. */
+static uint8_t desc_args_ok(const br_cmd_desc_t *d,
+                            const uint8_t *data, uint8_t len)
+{
+    if (d->flags == 0u) {
+        return 1u;
+    }
+    if ((d->flags & BR_ARG_ALL_OR_ROM) != 0u) {
+        if (len == 0u) {
+            return 1u;
+        }
+        return (len == 8u && data[0] != 0u) ? 1u : 0u;
+    }
+    if ((d->flags & BR_ARG_ROM) != 0u && data[0] == 0u) {
+        return 0u;
+    }
+    if ((d->flags & BR_ARG_READ_N) != 0u &&
+        (data[0] == 0u || data[0] > ONEWIRE_MAX_READ_BYTES)) {
+        return 0u;
+    }
+    if ((d->flags & BR_ARG_RES_BITS) != 0u &&
+        (data[8] < DS18B20_RES_MIN || data[8] > DS18B20_RES_MAX)) {
+        return 0u;
+    }
+    if ((d->flags & BR_ARG_BOOL) != 0u && data[0] > 1u) {
+        return 0u;
+    }
+    if ((d->flags & BR_ARG_EEPROM_N) != 0u &&
+        (data[9] == 0u || data[9] > DS2431_READ_PASS)) {
+        return 0u;
+    }
+    return 1u;
+}
+
+static inline uint8_t desc_ok(const br_cmd_desc_t *d,
+                              const uint8_t *data, uint8_t len)
+{
+    return (desc_len_ok(d, len) && desc_args_ok(d, data, len)) ? 1u : 0u;
 }
 
 /* Latch the response and account for a finished command. Used both by the
@@ -1119,10 +1194,6 @@ static void start_config_set(const br_command_t *cmd)
 
 static uint8_t poll_config_set(br_response_t *resp)
 {
-    if (bus.cmd.len != BR_CONFIG_SIZE) {
-        resp_simple(resp, BR_CMD_CONFIG_SET, BR_PARAM_ERROR);
-        return 1u;
-    }
     struct br_config cfg;
     fast_copy(&cfg, bus.cmd.data, BR_CONFIG_SIZE);
     uint8_t ok = config_set(&cfg);
@@ -1211,48 +1282,48 @@ static uint8_t poll_stats_reset(br_response_t *resp)
    instead of a linear scan over 38 entries. Unused slots stay zero, checked
    through the non-null poll pointer. */
 static const br_cmd_desc_t cmd_map[256] = {
-    [BR_CMD_OW_RESET]       = { start_ow_reset,       poll_ow_reset },
-    [BR_CMD_OW_WRITE_BYTE]  = { start_ow_write_byte,  poll_ow_write_byte },
-    [BR_CMD_OW_READ_BYTE]   = { start_ow_read_byte,   poll_ow_read_byte },
-    [BR_CMD_OW_WRITE_BYTES] = { start_ow_write_bytes, poll_ow_write_bytes },
-    [BR_CMD_OW_READ_BYTES]  = { start_ow_read_bytes,  poll_ow_read_bytes },
-    [BR_CMD_OW_MATCH_ROM]   = { start_ow_match,       poll_ow_match },
-    [BR_CMD_OW_SKIP_ROM]    = { start_ow_skip,        poll_ow_skip },
-    [BR_CMD_OW_READ_ROM]    = { start_ow_read_rom,    poll_ow_read_rom },
-    [BR_CMD_OW_SEARCH]      = { start_ow_search,      poll_ow_search },
-    [BR_CMD_OW_SEARCH_ALM]  = { start_ow_search_alm,  poll_ow_search_alm },
-    [BR_CMD_OW_SET_PULLUP]  = { start_ow_set_pullup,  poll_ow_set_pullup,  1u },
-    [BR_CMD_OW_SET_POWER]   = { start_ow_set_power,   poll_ow_set_power,   1u },
-    [BR_CMD_OW_GET_STATUS]  = { start_ow_get_status,  poll_ow_get_status,  1u },
-    [BR_CMD_OW_GET_DEVICES] = { start_ow_get_devices, poll_ow_get_devices, 1u },
-    [BR_CMD_OW_GET_COUNT]   = { start_ow_get_count,   poll_ow_get_count,   1u },
-    [BR_CMD_OW_CLEAR_CACHE] = { start_ow_clear_cache, poll_ow_clear_cache, 1u },
-    [BR_CMD_OW_ABORT]       = { start_ow_abort,       poll_ow_abort,       1u },
+    [BR_CMD_OW_RESET]       = BR_DESC(start_ow_reset,       poll_ow_reset,       0u,  0u,  0u, 0u),
+    [BR_CMD_OW_WRITE_BYTE]  = BR_DESC(start_ow_write_byte,  poll_ow_write_byte,  0u,  1u,  1u, 0u),
+    [BR_CMD_OW_READ_BYTE]   = BR_DESC(start_ow_read_byte,   poll_ow_read_byte,   0u,  0u,  0u, 0u),
+    [BR_CMD_OW_WRITE_BYTES] = BR_DESC(start_ow_write_bytes, poll_ow_write_bytes, 0u,  1u, 32u, 0u),
+    [BR_CMD_OW_READ_BYTES]  = BR_DESC(start_ow_read_bytes,  poll_ow_read_bytes,  0u,  1u,  1u, BR_ARG_READ_N),
+    [BR_CMD_OW_MATCH_ROM]   = BR_DESC(start_ow_match,       poll_ow_match,       0u,  8u, 40u, BR_ARG_ROM),
+    [BR_CMD_OW_SKIP_ROM]    = BR_DESC(start_ow_skip,        poll_ow_skip,        0u,  1u, 32u, 0u),
+    [BR_CMD_OW_READ_ROM]    = BR_DESC(start_ow_read_rom,    poll_ow_read_rom,    0u,  0u,  0u, 0u),
+    [BR_CMD_OW_SEARCH]      = BR_DESC(start_ow_search,      poll_ow_search,      0u,  0u,  3u, 0u),
+    [BR_CMD_OW_SEARCH_ALM]  = BR_DESC(start_ow_search_alm,  poll_ow_search_alm,  0u,  0u,  1u, 0u),
+    [BR_CMD_OW_SET_PULLUP]  = BR_DESC(start_ow_set_pullup,  poll_ow_set_pullup,  1u,  1u,  1u, BR_ARG_BOOL),
+    [BR_CMD_OW_SET_POWER]   = BR_DESC(start_ow_set_power,   poll_ow_set_power,   1u,  1u,  1u, BR_ARG_BOOL),
+    [BR_CMD_OW_GET_STATUS]  = BR_DESC(start_ow_get_status,  poll_ow_get_status,  1u,  0u,  0u, 0u),
+    [BR_CMD_OW_GET_DEVICES] = BR_DESC(start_ow_get_devices, poll_ow_get_devices, 1u,  2u,  2u, 0u),
+    [BR_CMD_OW_GET_COUNT]   = BR_DESC(start_ow_get_count,   poll_ow_get_count,   1u,  0u,  0u, 0u),
+    [BR_CMD_OW_CLEAR_CACHE] = BR_DESC(start_ow_clear_cache, poll_ow_clear_cache, 1u,  0u,  0u, 0u),
+    [BR_CMD_OW_ABORT]       = BR_DESC(start_ow_abort,       poll_ow_abort,       1u,  0u,  0u, 0u),
 
-    [BR_CMD_TEMP_CONVERT]   = { start_temp_convert,   poll_temp_convert },
-    [BR_CMD_TEMP_READ]      = { start_temp_read,      poll_temp_read },
-    [BR_CMD_TEMP_READ_ALL]  = { start_temp_read_all,  poll_temp_read_all },
-    [BR_CMD_TEMP_SET_RES]   = { start_temp_set_res,   poll_temp_set_res },
-    [BR_CMD_TEMP_GET_RES]   = { start_temp_get_res,   poll_temp_get_res },
-    [BR_CMD_TEMP_SET_ALARM] = { start_temp_set_alarm, poll_temp_set_alarm },
-    [BR_CMD_TEMP_GET_ALARM] = { start_temp_get_alarm, poll_temp_get_alarm },
-    [BR_CMD_TEMP_COPY]      = { start_temp_copy,      poll_temp_copy },
-    [BR_CMD_TEMP_RECALL]    = { start_temp_recall,    poll_temp_recall },
-    [BR_CMD_TEMP_DETECT_P]  = { start_temp_detect_p,  poll_temp_detect_p },
+    [BR_CMD_TEMP_CONVERT]   = BR_DESC(start_temp_convert,   poll_temp_convert,   0u,  0u,  8u, BR_ARG_ALL_OR_ROM),
+    [BR_CMD_TEMP_READ]      = BR_DESC(start_temp_read,      poll_temp_read,      0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_TEMP_READ_ALL]  = BR_DESC(start_temp_read_all,  poll_temp_read_all,  0u,  0u,  0u, 0u),
+    [BR_CMD_TEMP_SET_RES]   = BR_DESC(start_temp_set_res,   poll_temp_set_res,   0u,  9u,  9u, BR_ARG_ROM | BR_ARG_RES_BITS),
+    [BR_CMD_TEMP_GET_RES]   = BR_DESC(start_temp_get_res,   poll_temp_get_res,   0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_TEMP_SET_ALARM] = BR_DESC(start_temp_set_alarm, poll_temp_set_alarm, 0u, 10u, 10u, BR_ARG_ROM),
+    [BR_CMD_TEMP_GET_ALARM] = BR_DESC(start_temp_get_alarm, poll_temp_get_alarm, 0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_TEMP_COPY]      = BR_DESC(start_temp_copy,      poll_temp_copy,      0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_TEMP_RECALL]    = BR_DESC(start_temp_recall,    poll_temp_recall,    0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_TEMP_DETECT_P]  = BR_DESC(start_temp_detect_p,  poll_temp_detect_p,  0u,  8u,  8u, BR_ARG_ROM),
 
-    [BR_CMD_EEPROM_READ]    = { start_eeprom_read,    poll_eeprom_read },
-    [BR_CMD_EEPROM_WRITE]   = { start_eeprom_write,   poll_eeprom_write },
-    [BR_CMD_EEPROM_READ_S]  = { start_eeprom_read_s,  poll_eeprom_read_s },
+    [BR_CMD_EEPROM_READ]    = BR_DESC(start_eeprom_read,    poll_eeprom_read,    0u, 10u, 10u, BR_ARG_ROM | BR_ARG_EEPROM_N),
+    [BR_CMD_EEPROM_WRITE]   = BR_DESC(start_eeprom_write,   poll_eeprom_write,   0u, 10u, 17u, BR_ARG_ROM),
+    [BR_CMD_EEPROM_READ_S]  = BR_DESC(start_eeprom_read_s,  poll_eeprom_read_s,  0u,  8u,  8u, BR_ARG_ROM),
 
-    [BR_CMD_IO_READ]        = { start_io_read,        poll_io_read },
-    [BR_CMD_IO_WRITE]       = { start_io_write,       poll_io_write },
+    [BR_CMD_IO_READ]        = BR_DESC(start_io_read,        poll_io_read,        0u,  8u,  8u, BR_ARG_ROM),
+    [BR_CMD_IO_WRITE]       = BR_DESC(start_io_write,       poll_io_write,       0u,  9u,  9u, BR_ARG_ROM),
 
-    [BR_CMD_CONFIG_GET]     = { start_config_get,     poll_config_get,     1u },
-    [BR_CMD_CONFIG_SET]     = { start_config_set,     poll_config_set },
-    [BR_CMD_FIRMWARE_VER]   = { start_firmware_ver,   poll_firmware_ver,   1u },
-    [BR_CMD_RESET]          = { start_reset,          poll_reset },
-    [BR_CMD_STATS_GET]      = { start_stats_get,      poll_stats_get,      1u },
-    [BR_CMD_STATS_RESET]    = { start_stats_reset,    poll_stats_reset,    1u },
+    [BR_CMD_CONFIG_GET]     = BR_DESC(start_config_get,     poll_config_get,     1u,  0u,  0u, 0u),
+    [BR_CMD_CONFIG_SET]     = BR_DESC(start_config_set,     poll_config_set,     0u, 40u, 40u, 0u),
+    [BR_CMD_FIRMWARE_VER]   = BR_DESC(start_firmware_ver,   poll_firmware_ver,   1u,  0u,  0u, 0u),
+    [BR_CMD_RESET]          = BR_DESC(start_reset,          poll_reset,          0u,  0u,  0u, 0u),
+    [BR_CMD_STATS_GET]      = BR_DESC(start_stats_get,      poll_stats_get,      1u,  0u,  0u, 0u),
+    [BR_CMD_STATS_RESET]    = BR_DESC(start_stats_reset,    poll_stats_reset,    1u,  0u,  0u, 0u),
 };
 
 static inline const br_cmd_desc_t *find_desc(uint8_t cmd)
@@ -1275,14 +1346,15 @@ static void bus_start_next(void)
     br_command_t *src = &queue[queue_head];
     uint8_t cmd = src->cmd;
     const br_cmd_desc_t *desc = find_desc(cmd);
-    if (desc == 0) {
-        bus.resp.status = BR_INVALID_CMD;
-        bus.resp.cmd = cmd;
-        bus.resp.len = 0u;
-        queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
-        queue_count--;
-        resp_commit();
-        led_result(BR_INVALID_CMD);
+
+    /* Consume the entry before validating it so a bad one cannot block the
+       queue. bridge_submit() already validated it; this is defense in depth. */
+    queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
+    queue_count--;
+
+    if (desc == 0 || src->len > BR_MAX_DATA ||
+        !desc_ok(desc, src->data, src->len)) {
+        latch_reject(cmd, (desc == 0) ? BR_INVALID_CMD : BR_PARAM_ERROR);
         bus.state = BR_BUS_DONE;
         return;
     }
@@ -1292,8 +1364,6 @@ static void bus_start_next(void)
     if (src->len != 0u) {
         fast_copy(bus.cmd.data, src->data, src->len);
     }
-    queue_head = (uint8_t)((queue_head + 1u) % BR_QUEUE_SIZE);
-    queue_count--;
 
     bus_begin_command(desc, cmd);
 }
@@ -1301,13 +1371,28 @@ static void bus_start_next(void)
 uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
 {
     if (frame == 0 || len < 2u) {
-        return 0u;
+        return 0u;   /* no command code/length: nothing to answer with */
     }
+
     uint8_t cmd = frame[0];
     uint8_t dlen = frame[1];
-    if (dlen > BR_MAX_DATA || len < (uint8_t)(2u + dlen)) {
-        return 0u;
+    const br_cmd_desc_t *desc = find_desc(cmd);
+
+    if (desc == 0) {
+        latch_reject(cmd, BR_INVALID_CMD);
+        return 1u;
     }
+
+    /* Reject a frame whose declared length does not match the bytes received
+       (truncated or padded), exceeds the buffer, or carries parameters the
+       command cannot use. */
+    if (dlen > BR_MAX_DATA ||
+        len != (uint8_t)(2u + dlen) ||
+        !desc_ok(desc, frame + 2u, dlen)) {
+        latch_reject(cmd, BR_PARAM_ERROR);
+        return 1u;
+    }
+
     if (cmd == BR_CMD_OW_ABORT) {
         /* The library cannot cancel the in-flight hardware operation, but we
            can drop everything that was queued behind it. */
@@ -1324,16 +1409,6 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
         return 0u;
     }
     if (bus.state == BR_BUS_IDLE && queue_count == 0u) {
-        const br_cmd_desc_t *desc = find_desc(cmd);
-        if (desc == 0) {
-            bus.resp.status = BR_INVALID_CMD;
-            bus.resp.cmd = cmd;
-            bus.resp.len = 0u;
-            resp_commit();
-            led_result(BR_INVALID_CMD);
-            bus.state = BR_BUS_DONE;
-            return 1u;
-        }
         bus.cmd.cmd = cmd;
         bus.cmd.len = dlen;
         if (dlen != 0u) {

@@ -185,7 +185,7 @@ The software I2C slave uses the same bare frame: a write transaction delivers
 | 0x04 | BUS_SHORT | bus short circuit |
 | 0x05 | TIMEOUT | operation timed out |
 | 0x06 | INVALID_CMD | unknown command |
-| 0x07 | PARAM_ERROR | invalid parameters |
+| 0x07 | PARAM_ERROR | invalid parameters (payload length or argument) |
 | 0x08 | BUS_ERROR | generic bus failure |
 | 0x09 | NOT_SUPPORTED | feature not supported |
 | 0x0A | QUEUE_FULL | command queue is full |
@@ -203,10 +203,10 @@ the host keeps polling the response until it becomes `OK` or an error.
 | 0x01 | `OW_RESET` | - | `present`, `short` |
 | 0x02 | `OW_WRITE_BYTE` | `data[1]` | - |
 | 0x03 | `OW_READ_BYTE` | - | `data[1]` |
-| 0x04 | `OW_WRITE_BYTES` | `data[n]` | - |
-| 0x05 | `OW_READ_BYTES` | `n` (data[0]) | `data[n]` |
-| 0x06 | `OW_MATCH_ROM` | `rom[8]` + payload | - |
-| 0x07 | `OW_SKIP_ROM` | payload | - |
+| 0x04 | `OW_WRITE_BYTES` | `data[1..32]` | - |
+| 0x05 | `OW_READ_BYTES` | `n` (data[0], 1..32) | `data[n]` |
+| 0x06 | `OW_MATCH_ROM` | `rom[8]` + payload (0..32) | - |
+| 0x07 | `OW_SKIP_ROM` | payload (1..32) | - |
 | 0x08 | `OW_READ_ROM` | - | `rom[8]` |
 | 0x09 | `OW_SEARCH` | `cmd`, `family`, `max` | `count` |
 | 0x0A | `OW_SEARCH_ALM` | `max` | `count` |
@@ -226,7 +226,7 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 
 | Code | Command | Parameters | Response |
 |------|---------|------------|----------|
-| 0x20 | `TEMP_CONVERT` | `rom[8]`, or 0 for broadcast | `temp x 10` for an addressed device; conversion status in broadcast mode |
+| 0x20 | `TEMP_CONVERT` | `rom[8]`, or an empty payload for broadcast | `temp x 10` for an addressed device; conversion status in broadcast mode |
 | 0x21 | `TEMP_READ` | `rom[8]` | `temp x 10` |
 | 0x22 | `TEMP_READ_ALL` | - | `temp x 10` x n |
 | 0x23 | `TEMP_SET_RES` | `rom[8]`, `bits` | - |
@@ -241,8 +241,8 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 
 | Code | Command | Parameters | Response |
 |------|---------|------------|----------|
-| 0x30 | `EEPROM_READ` | `rom[8]`, `addr`, `len` (<= 8) | `data[len]` |
-| 0x31 | `EEPROM_WRITE` | `rom[8]`, `addr`, `data` | - |
+| 0x30 | `EEPROM_READ` | `rom[8]`, `addr`, `len` (1..8) | `data[len]` |
+| 0x31 | `EEPROM_WRITE` | `rom[8]`, `addr`, `data[1..8]` | - |
 | 0x32 | `EEPROM_READ_S` | `rom[8]` | `data[11]` |
 
 ### DS2413 PIO
@@ -263,6 +263,53 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 | 0x54 | `STATS_GET` | - | 7 x u32 + uptime |
 | 0x55 | `STATS_RESET` | - | - |
 
+### Parameter validation
+
+Each frame is checked against a per-command descriptor before it is queued.
+A malformed frame never reaches a handler and never touches the 1-Wire bus.
+
+Payload length (`len` in the frame, excluding `cmd` and `len` itself):
+
+| Length | Commands |
+|--------|----------|
+| 0 | `OW_RESET`, `OW_READ_BYTE`, `OW_READ_ROM`, `OW_GET_STATUS`, `OW_GET_COUNT`, `OW_CLEAR_CACHE`, `OW_ABORT`, `TEMP_READ_ALL`, `CONFIG_GET`, `FIRMWARE_VER`, `RESET`, `STATS_GET`, `STATS_RESET` |
+| 1 | `OW_WRITE_BYTE`, `OW_READ_BYTES`, `OW_SET_PULLUP`, `OW_SET_POWER` |
+| 2 | `OW_GET_DEVICES` |
+| 1..32 | `OW_WRITE_BYTES`, `OW_SKIP_ROM` |
+| 0..3 | `OW_SEARCH` |
+| 0..1 | `OW_SEARCH_ALM` |
+| 0 or 8 | `TEMP_CONVERT` (empty = broadcast, 8 = addressed) |
+| 8 | `TEMP_READ`, `TEMP_GET_RES`, `TEMP_GET_ALARM`, `TEMP_COPY`, `TEMP_RECALL`, `TEMP_DETECT_P`, `EEPROM_READ_S`, `IO_READ` |
+| 8..40 | `OW_MATCH_ROM` (8-byte ROM + up to 32 payload bytes) |
+| 9 | `TEMP_SET_RES`, `IO_WRITE` |
+| 10 | `TEMP_SET_ALARM`, `EEPROM_READ` |
+| 10..17 | `EEPROM_WRITE` (ROM + address + 1..8 data bytes) |
+| 40 | `CONFIG_SET` |
+
+Argument checks applied after the length range:
+
+- addressed commands (`OW_MATCH_ROM`, `TEMP_*`, `EEPROM_*`, `IO_*`) require a
+  nonzero first ROM byte; an all-zero ROM is `PARAM_ERROR`, not a silent
+  fallback to broadcast;
+- `OW_READ_BYTES` accepts `n` in 1..32;
+- `TEMP_SET_RES` accepts 9..12 resolution bits;
+- `EEPROM_READ` accepts a length byte in 1..8;
+- `OW_SET_PULLUP` and `OW_SET_POWER` accept 0 or 1;
+- `TEMP_CONVERT` accepts an empty payload or exactly 8 bytes with a nonzero
+  ROM.
+
+Malformed frames:
+
+- a frame shorter than two bytes (no `len` byte) cannot be parsed and is not
+  answered; the previously latched response stays visible;
+- an unknown command code is answered with `INVALID_CMD`;
+- a wrong payload length, a truncated/padded frame, or a bad argument is
+  answered with `PARAM_ERROR` (three header bytes, no data);
+- the error is latched as soon as the frame is received, even while a long
+  command is still running. That command's final result later replaces the
+  error in the shared response slot, so a host that writes, reads and only
+  then writes again never sees the overlap.
+
 ## Configuration
 
 Stored in the last flash page (`0x08007C00`, 1 KB). The structure is 40 bytes
@@ -281,13 +328,17 @@ override it at runtime with `OW_SET_POWER`.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 24 880 B | 2 412 B |
-| SPI | 21 532 B | 2 192 B |
-| I2C | 21 668 B | 2 040 B |
+| UART | 25 124 B | 2 416 B |
+| SPI | 21 704 B | 2 196 B |
+| I2C | 21 812 B | 2 044 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack; about 1.6-2.0 KB remains below the 4 KB limit. The linker script
 defines `_Min_Stack_Size` as a budget but does not enforce it.
+
+The per-command descriptor still occupies 12 bytes, so adding `min_len`,
+`max_len` and `flags` did not grow the 256-entry `cmd_map` (3072 bytes in
+`.rodata`); the validation code itself adds about 80 bytes.
 
 The library keeps `OW_OPT` (`-O2`), while the firmware adds `-flto`,
 `-ffunction-sections/-fdata-sections` and
@@ -358,6 +409,17 @@ python owbridge_demo.py selftest
 Captured output from the 9-device bench, the transport behaviour and the quirks
 the demo uncovered are in [`docs/demo.md`](docs/demo.md).
 
+[`tools/protocol_test.py`](tools/protocol_test.py) reuses the same transport for
+protocol conformance. It sends every command at its minimum, maximum and
+out-of-range payload lengths, checks the semantic argument rules, replays stale
+buffer contents, and can fuzz the parser:
+
+```text
+python protocol_test.py
+python protocol_test.py --fuzz 10000
+python protocol_test.py --destructive
+```
+
 ## Source layout
 
 ```
@@ -373,6 +435,7 @@ src/host_uart.c     USART1: DMA TX/RX, binary protocol and AT commands
 src/host_spi.c      SPI1 slave, polled RXNE/TXE
 src/host_i2c_soft.c software I2C slave, polled SCL/SDA edges
 tools/owbridge_demo.py stdlib-only host demo for the I2C build
+tools/protocol_test.py protocol boundary and fuzz tests (same transport)
 docs/demo.md        demo scenarios, captured output and quirks
 ```
 
