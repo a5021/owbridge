@@ -46,6 +46,10 @@ typedef struct {
 
 static br_bus_t bus;
 
+/* Set by OW_SET_PULLUP so the bridge knows the host wants the strong pull-up
+   to stay engaged across commands (e.g. a host-driven parasite conversion). */
+static uint8_t pullup_hold;
+
 /* --- Last response (decoupled from the bus state machine) ----------------- */
 
 /* The frame starts one byte into the storage so that last_resp + 3 (the data
@@ -114,6 +118,17 @@ static inline void bus_finish_command(void)
    commands the poll runs in the main loop, keeping the STOP handler short. */
 static inline void bus_begin_command(const br_cmd_desc_t *desc, uint8_t cmd)
 {
+    /* The DS18B20 driver parks in parasite mode with the strong pull-up
+       engaged. On this port that switches PA10 to push-pull, so the bus
+       cannot be driven by a slave until an explicit release. Restore the
+       open-drain line before every operation unless the host asked to hold
+       the pull-up through OW_SET_PULLUP. */
+    if (!pullup_hold) {
+        onewire_strong_pullup(0);
+        if (config_get()->strong_pullup) {
+            board_gate_pullup(0);
+        }
+    }
     bus.desc = desc;
     bus.state = BR_BUS_BUSY;
     desc->start(&bus.cmd);
@@ -497,6 +512,7 @@ static uint8_t poll_ow_search_alm(br_response_t *resp)
 static void start_ow_set_pullup(const br_command_t *cmd)
 {
     uint8_t on = (cmd->len > 0u) ? cmd->data[0] : 0u;
+    pullup_hold = on;
     onewire_strong_pullup(on);
     if (config_get()->strong_pullup) {
         board_gate_pullup(on);
@@ -1419,6 +1435,7 @@ void bridge_init(void)
     bus.account_pending = 0u;
     bus.desc = 0;
     bus.resp.data = last_resp + 3u;
+    pullup_hold = 0u;
     queue_head = queue_tail = queue_count = 0u;
 
     last_resp[0] = BR_OK;

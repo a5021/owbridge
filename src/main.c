@@ -72,6 +72,10 @@ int main(void)
 #endif
 
     for (;;) {
+        /* Keep the millisecond counter advancing even when the bus is idle:
+           every other call site sits in a branch that only runs while the
+           I2C master is active, which would freeze stats_uptime(). */
+        (void)board_millis();
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
         if (!prof_cmd_done && board_millis() > 1000u) {
             profile_experiment();

@@ -330,6 +330,34 @@ An 18-minute I2C load test (77 286 bulk 163-byte reads, 202 777 transactions,
 zero errors and zero resets) is documented in
 [`docs/i2c-stress-test.md`](docs/i2c-stress-test.md).
 
+The host demo surfaced two firmware issues that are now fixed. The DS18B20
+driver parks in parasite mode with the strong pull-up engaged, which on this
+port switches PA10 to push-pull and broke any following search; `bridge.c` now
+restores the open-drain line before every command unless `OW_SET_PULLUP` asked
+to hold it. `stats_uptime()` also only advanced while the I2C bus was busy for
+more than 50 ms; the main loop now calls `board_millis()` unconditionally so
+the counter follows real time while the bus is idle.
+
+## Host demo
+
+[`tools/owbridge_demo.py`](tools/owbridge_demo.py) is a stdlib-only Python demo
+for the I2C build. It drives the bridge through a CH341A USB-I2C adapter and
+walks through every capability: search, DS18B20 temperature, DS2431 EEPROM,
+DS2413 PIO, configuration, statistics, queueing, abort, latency and a stress
+load. Every scenario also returns a dictionary, so `--json` makes it
+scriptable; `--verbose` prints every I2C frame.
+
+```text
+python owbridge_demo.py scan
+python owbridge_demo.py temp
+python owbridge_demo.py eeprom --dump
+python owbridge_demo.py timing --all
+python owbridge_demo.py selftest
+```
+
+Captured output from the 9-device bench, the transport behaviour and the quirks
+the demo uncovered are in [`docs/demo.md`](docs/demo.md).
+
 ## Source layout
 
 ```
@@ -344,6 +372,8 @@ src/profile.c       one-off TIM3 I2C timing profiler (OWBRIDGE_PROFILE)
 src/host_uart.c     USART1: DMA TX/RX, binary protocol and AT commands
 src/host_spi.c      SPI1 slave, polled RXNE/TXE
 src/host_i2c_soft.c software I2C slave, polled SCL/SDA edges
+tools/owbridge_demo.py stdlib-only host demo for the I2C build
+docs/demo.md        demo scenarios, captured output and quirks
 ```
 
 ## Notes for the library maintainers
