@@ -521,6 +521,67 @@ class Bridge:
             raise BridgeStatus(cmd, resp.status, bcd_hex(resp.data))
         return resp.data
 
+    # -- protocol testing --------------------------------------------------
+
+    def raw_frame(self, frame: bytes, timeout: float = 3.0,
+                  poll_busy: bool = True) -> Response:
+        """Send a frame exactly as given, including a deliberately wrong len.
+
+        Unlike command(), this does not rebuild the frame, does not require
+        the response to echo the command byte, and does not resend a stale
+        frame. It is meant for boundary tests and fuzzing.
+        """
+        t0 = time.perf_counter()
+        self._tx(bytes(frame))
+        deadline = time.monotonic() + timeout
+        polls = 0
+        while True:
+            hdr = self._rx(3)
+            polls += 1
+            if hdr[0] == 0xFF and hdr[1] == 0xFF:
+                if time.monotonic() >= deadline:
+                    raise BridgeTimeout(
+                        "no ACK from 0x%02X after %d polls" % (self.addr, polls)
+                    )
+                continue
+            if hdr[0] == BR_BUSY and poll_busy:
+                if time.monotonic() >= deadline:
+                    raise BridgeTimeout(
+                        "response stayed BUSY for %.2f s (%d polls)"
+                        % (timeout, polls)
+                    )
+                continue
+            length = min(hdr[2], BR_MAX_RESP)
+            full = self._rx(3 + length) if length else hdr
+            if full[:3] != hdr:
+                if time.monotonic() >= deadline:
+                    raise BridgeError(
+                        "response frame kept changing between reads (%d polls)" % polls
+                    )
+                continue
+            return Response(
+                status=hdr[0],
+                cmd=hdr[1],
+                data=full[3:3 + length],
+                polls=polls,
+                elapsed=time.perf_counter() - t0,
+                nacks=0,
+            )
+
+    def read_response(self) -> Response:
+        """Read the currently latched response without sending a frame."""
+        hdr = self._rx(3)
+        length = min(hdr[2], BR_MAX_RESP)
+        full = self._rx(3 + length) if length else hdr
+        return Response(
+            status=hdr[0],
+            cmd=hdr[1],
+            data=full[3:3 + length],
+            polls=1,
+            elapsed=0.0,
+            nacks=0,
+        )
+
     # -- service -----------------------------------------------------------
 
     def firmware_ver(self) -> str:
@@ -597,8 +658,8 @@ class Bridge:
         return self.expect(0x03, timeout=3.0)[0]
 
     def ow_write_bytes(self, payload: bytes) -> None:
-        if len(payload) > 32:
-            raise ValueError("the 1-Wire engine writes at most 32 bytes per command")
+        if not 1 <= len(payload) <= 32:
+            raise ValueError("the 1-Wire engine writes 1..32 bytes per command")
         self.expect(0x04, payload, timeout=10.0)
 
     def ow_read_bytes(self, count: int) -> bytes:
@@ -609,9 +670,13 @@ class Bridge:
     def ow_match_rom(self, rom: bytes, payload: bytes = b"") -> None:
         if len(rom) != 8:
             raise ValueError("MATCH ROM needs the full 8-byte ROM")
+        if len(payload) > 32:
+            raise ValueError("MATCH ROM accepts at most 32 payload bytes after the ROM")
         self.expect(0x06, rom + payload, timeout=10.0)
 
     def ow_skip_rom(self, payload: bytes = b"") -> None:
+        if not 1 <= len(payload) <= 32:
+            raise ValueError("SKIP ROM needs 1..32 bytes to send after the ROM command")
         self.expect(0x07, payload, timeout=10.0)
 
     def ow_set_pullup(self, on: bool) -> None:

@@ -12,6 +12,12 @@ packages. Every scenario prints a human-readable report and returns a
 dictionary; `--json` prints only the dictionary, which makes the same commands
 usable from scripts.
 
+`tools/protocol_test.py` reuses that transport for protocol conformance: it
+sends every command at its minimum, maximum and out-of-range payload lengths,
+checks the semantic argument rules, replays stale buffer contents, and can
+fuzz the parser. It is described under
+[protocol tests](#protocol_testpy) below.
+
 ```text
 python owbridge_demo.py info
 python owbridge_demo.py scan
@@ -27,6 +33,9 @@ python owbridge_demo.py abort
 python owbridge_demo.py timing --all
 python owbridge_demo.py load --seconds 10
 python owbridge_demo.py selftest
+python protocol_test.py
+python protocol_test.py --fuzz 10000
+python protocol_test.py --destructive
 ```
 
 Global options are accepted before or after the scenario name: `--addr`
@@ -301,6 +310,39 @@ Self test
   RESULT: PASS
 ```
 
+### `protocol_test.py`
+
+Boundary matrix, argument checks, stale-buffer replay and a 10 000-frame fuzz
+run on the 9-device bench. Only the first and last lines are shown; the full
+log is kept outside the repository.
+
+```text
+owbridge protocol test  addr 0x30  100k  fuzz=10000
+baseline: 9 devices, 7 DS18B20
+PASS  unknown    cmd=0x00 len=0  [INVALID_CMD cmd=0x00 len=0]
+PASS  matrix     OW_WRITE_BYTE len=0  [PARAM_ERROR cmd=0x02 len=0]
+PASS  matrix     OW_WRITE_BYTE len=1  [OK cmd=0x02 len=0]
+PASS  matrix     OW_MATCH_ROM len=7  [PARAM_ERROR cmd=0x06 len=0]
+PASS  matrix     TEMP_CONVERT len=7  [PARAM_ERROR cmd=0x20 len=0]
+PASS  args       TEMP_READ rom[0]=0  [PARAM_ERROR cmd=0x21 len=0]
+PASS  structure  1-byte frame is unanswered  [PARAM_ERROR/0x20 -> PARAM_ERROR/0x20]
+PASS  structure  padded frame (dlen=0, 4 extra)  [PARAM_ERROR cmd=0x0F len=0]
+PASS  stale      rejected frames never touch the bus  [commands 100 -> 101 (delta 1)]
+PASS  stale      bus alive after rejects  [reset present=True]
+PASS  fuzz       10000 frames accepted without bus errors
+PASS  fuzz       uptime kept running  [63 -> 76 s]
+PASS  verify     device count unchanged  [search=9 cached=9 baseline=9]
+PASS  verify     temperature array intact  [7 values, baseline 7]
+
+RESULT: PASS  (157 passed, 0 failed, 10 skipped)
+```
+
+The ten skips are valid payloads the tool deliberately does not execute:
+`RESET`, `STATS_RESET`, `CONFIG_SET`, `EEPROM_WRITE`, `TEMP_COPY`,
+`TEMP_RECALL`, `IO_WRITE`, and the two power/pull-up commands. Their
+out-of-range lengths are still checked; the destructive write paths run only
+with `--destructive`.
+
 ## Quirks the demo exposes
 
 * `OW_READ_ROM` (`0x33`) only makes sense with one device on the bus. On the
@@ -319,3 +361,6 @@ Self test
 * `stats_uptime()` only advanced while the I2C bus was busy for more than
   50 ms. The main loop now calls `board_millis()` unconditionally, so the
   counter follows real time even when the bus is idle.
+* Payload lengths are validated per command before queueing. An all-zero ROM
+  on an addressed command is `PARAM_ERROR` rather than a silent broadcast, and
+  `OW_MATCH_ROM` no longer underflows on a payload shorter than eight bytes.
