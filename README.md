@@ -379,7 +379,11 @@ fits; its protocol test still needs an external SPI master.
 
 An 18-minute I2C load test (77 286 bulk 163-byte reads, 202 777 transactions,
 zero errors and zero resets) is documented in
-[`docs/i2c-stress-test.md`](docs/i2c-stress-test.md).
+[`docs/i2c-stress-test.md`](docs/i2c-stress-test.md). A 60-minute torture run
+(252 646 bulk reads, 776 677 transactions, 42.0 MB read) adds malformed-frame
+bursts, stale-buffer replay, queue/abort churn and parser fuzz; it also
+finished with zero errors, zero resets and zero bad responses, documented in
+[`docs/i2c-torture-test.md`](docs/i2c-torture-test.md).
 
 The host demo surfaced two firmware issues that are now fixed. The DS18B20
 driver parks in parasite mode with the strong pull-up engaged, which on this
