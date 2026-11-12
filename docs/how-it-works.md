@@ -66,10 +66,10 @@ sequenceDiagram
     participant H as Host
     participant B as Bridge
     participant O as 1-Wire
-    H->>B: [cmd][len][data...]
+    H->>B: cmd + len + data
     B->>B: find descriptor, validate length and arguments
     alt instant command
-        B->>B: start(); poll() completes now
+        B->>B: start/poll return immediately
     else long command
         B->>O: start engine (reset, slots, read)
         B-->>H: BUSY, cmd, 0
@@ -78,7 +78,7 @@ sequenceDiagram
             B-->>H: BUSY, cmd, 0
         end
     end
-    B-->>H: [status][cmd][len][data...]
+    B-->>H: status + cmd + len + data
 ```
 
 An **instant** command is completed inside `bridge_submit()` before the I2C
