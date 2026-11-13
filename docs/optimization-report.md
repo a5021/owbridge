@@ -74,7 +74,7 @@ Effect on the bench:
 | read-all poll | 45 us | 25 us |
 | EEPROM poll | 89 us | 50 us |
 | 32-byte write submit | 93 us | 30 us |
-| retries at 100 kHz | 3 827 | about 2 900 |
+| retries at 100 kHz | 3 827 | 2 500-2 800 |
 
 PR status: <https://github.com/a5021/stm32-async-1wire/pull/121>. All checks
 pass except `cmake (h7)`, which fails in the dependency download (the pinned
