@@ -6,6 +6,23 @@ rejected and why, and what remains. Every number comes from the 9-device
 bench (STM32F030F4 at 48 MHz, CH341A host adapter, 7 x DS18B20, one DS2413,
 one DS2431). Nothing here is an estimate unless it says so.
 
+## TL;DR
+
+- Retries at 100 kHz over 120 long commands fell from **3 827 to about
+  2 300** (-40%) with **zero failed commands**; the address-NACK rate in a
+  logic-analyzer capture fell from **4.2% to 1.9%**. At 20 kHz it stays at
+  zero.
+- The wins are the library's table-driven CRC-8/CRC-16, encoder and packed
+  four-slot decoder (PR #121), the packed SCL/SDA sampler in the firmware, the
+  word-compare ROM cache, and one status byte per BUSY poll at 20 kHz (a
+  search drops from 1.19 s to about 0.65 s).
+- Slicing the work, a post-STOP quiet window, a deferred command start and
+  RAM-resident search code were all measured and rejected: they were worse or
+  below run-to-run noise.
+- The search is host-poll bound, not bus bound; the interrupt-free requirement
+  rules out the hardware-slave route, so the retry contract remains the
+  guarantee.
+
 ## Method
 
 - **TIM3 profiler** (`-DOWBRIDGE_PROFILE=ON`, results read over SWD). The

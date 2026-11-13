@@ -527,7 +527,9 @@ tools/protocol_test.py protocol boundary and fuzz tests (same transport)
 docs/demo.md        demo scenarios, captured output and quirks
 docs/how-it-works.md illustrated walkthrough with captured traffic
 docs/optimization-report.md  what was measured, changed and rejected in the
-                            100 kHz service-window work
+                            100 kHz service-window work: retries 3 827 ->
+                            about 2 300 (-40%), 0 failed commands, address
+                            NACKs 4.2% -> 1.9%, and the four rejected ideas
 ```
 
 ## Notes for the library maintainers
