@@ -31,10 +31,13 @@ Poll pacing
 While a long command is BUSY the firmware runs 1-Wire state-machine steps of
 up to a few tens of microseconds. A START that lands inside one is lost (the
 slave only samples SCL between steps), and the loss probability is roughly
-step_time / gap, so ``--poll-gap`` (default 250 us) spaces the BUSY polls and
-buys fewer retries. Measured at 100 kHz over 120 long commands: 2 746 retries
-back-to-back, 2 081 at 250 us and 1 599 at 500 us, with the command latency
-unchanged because the 1-Wire work dominates. See docs/i2c-timing.md.
+step_time / gap, so ``--poll-gap`` spaces the BUSY polls and buys fewer
+retries. The default depends on the bus rate: 250 us at 100 kHz (2 746
+retries back-to-back, 2 081 at 250 us, 1 599 at 500 us over 120 long
+commands, at the cost of about 8% more search latency) and 0 at 20 kHz,
+where there are no retries and the gap only slows long commands down (a
+search took 0.70 s at 250 us versus 1.09 s back-to-back, because every host
+transaction suspends the 1-Wire state machine). See docs/i2c-timing.md.
 
 Protocol note
 -------------
@@ -1505,8 +1508,9 @@ def add_common(parser, suppress: bool):
                         help="CH341A I2C clock (default 100k); 400k+ is not supported by the slave")
     parser.add_argument("--dll", default=default(DEFAULT_DLL), help="path to CH341DLLA64.DLL")
     parser.add_argument("--timeout", type=float, default=default(3.0), help="command BUSY timeout in seconds")
-    parser.add_argument("--poll-gap", type=float, default=default(250.0),
-                        help="pause between BUSY polls, microseconds (default 250; 0 = back-to-back)")
+    parser.add_argument("--poll-gap", type=float, default=None,
+                        help="pause between BUSY polls, microseconds "
+                             "(default: 250 at 100k, 0 at 20k)")
     parser.add_argument("--json", action="store_true", default=default(False), help="machine-readable output")
     parser.add_argument("--verbose", action="store_true", default=default(False), help="print every I2C frame")
     parser.add_argument("--no-color", action="store_true", default=default(False), help="disable ANSI colours")
@@ -1582,7 +1586,13 @@ def main(argv=None) -> int:
 
     try:
         with Ch341I2C(args.dll, speed=SPEEDS[args.speed]) as io:
-            bridge = Bridge(io, addr=addr, trace=trace, poll_gap=args.poll_gap / 1e6)
+            gap_us = args.poll_gap
+            if gap_us is None:
+                # At 100 kHz the gap buys ~25% fewer retries for ~8% more
+                # search latency; at 20 kHz there are no retries to buy and
+                # the gap only slows long commands down.
+                gap_us = 250.0 if args.speed == "100k" else 0.0
+            bridge = Bridge(io, addr=addr, trace=trace, poll_gap=gap_us / 1e6)
             if not args.json:
                 print(out.c.bold("owbridge demo") + out.c.dim("  addr 0x%02X  %s  %s"
                                                                % (addr, args.speed, args.dll)))
