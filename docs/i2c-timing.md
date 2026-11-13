@@ -160,10 +160,13 @@ count outside run-to-run noise.
 
 Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
-retry, as `Bridge.command()` already does. `CONFIG_SET` blocks for ~23 ms and
-always needs the retry rule. The CH341A `CH341StreamI2C(wlen, rlen)` combined
-call is the worst case because its STOP-to-START turnaround is only about
-15 us.
+retry, as `Bridge.command()` already does. The demo applies the first half
+directly: `--poll-gap` (default 250 us) spaces its BUSY polls, and over 120
+long commands at 100 kHz the retry count fell from 2 746 back-to-back to
+2 081 at 250 us and 1 599 at 500 us, with command latency unchanged.
+`CONFIG_SET` blocks for ~23 ms and always needs the retry rule. The CH341A
+`CH341StreamI2C(wlen, rlen)` combined call is the worst case because its
+STOP-to-START turnaround is only about 15 us.
 
 ## Command turnaround after STOP
 

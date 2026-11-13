@@ -63,7 +63,12 @@ transaction. Two adapter quirks shape the transport:
   above absorb them. A host that needs every frame accepted on the first try
   must leave at least 100 us after STOP (250 us is comfortable), or use UART,
   whose frames carry a CRC-8. `CONFIG_SET` blocks for ~23 ms and always needs
-  the retry rule.
+  the retry rule. The demo also spaces its BUSY polls by `--poll-gap`
+  microseconds (default 250, `0` = back-to-back): the loss probability is
+  roughly step_time / gap, so a longer gap buys fewer retries. Measured over
+  120 long commands at 100 kHz: 2 746 retries back-to-back, 2 081 at 250 us
+  and 1 599 at 500 us, with command latency unchanged (the 1-Wire work
+  dominates).
 
 The I2C frame has no checksum; see the transport integrity table in the
 README. Commands with self-checking payloads (ROM CRC-8, DS2431 CRC-16,

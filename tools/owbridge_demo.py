@@ -26,6 +26,16 @@ Examples
     python owbridge_demo.py timing --all
     python owbridge_demo.py selftest
 
+Poll pacing
+------------
+While a long command is BUSY the firmware runs 1-Wire state-machine steps of
+up to a few tens of microseconds. A START that lands inside one is lost (the
+slave only samples SCL between steps), and the loss probability is roughly
+step_time / gap, so ``--poll-gap`` (default 250 us) spaces the BUSY polls and
+buys fewer retries. Measured at 100 kHz over 120 long commands: 2 746 retries
+back-to-back, 2 081 at 250 us and 1 599 at 500 us, with the command latency
+unchanged because the 1-Wire work dominates. See docs/i2c-timing.md.
+
 Protocol note
 -------------
 The CH341A reports ``ok=1`` even when a slave NACKs the address phase; an
@@ -423,10 +433,29 @@ class Response:
 class Bridge:
     """Command level access to the bridge, one method per command."""
 
-    def __init__(self, io: Ch341I2C, addr: int = DEFAULT_ADDR, trace=None):
+    def __init__(self, io: Ch341I2C, addr: int = DEFAULT_ADDR, trace=None,
+                 poll_gap: float = 0.0):
         self.io = io
         self.addr = addr
         self.trace = trace
+        # Pause between consecutive BUSY polls, in seconds. A START that
+        # lands inside the firmware's next bridge_poll() step is lost (see
+        # docs/i2c-timing.md), and the loss probability is roughly
+        # step_time / gap: a longer gap buys fewer retries at the cost of
+        # command latency.
+        self.poll_gap = poll_gap
+
+    def _pace(self) -> None:
+        """Wait out the configured inter-poll gap.
+
+        A busy-wait, because Windows sleep granularity is coarser than the
+        sub-millisecond gaps this knob uses.
+        """
+        if self.poll_gap <= 0.0:
+            return
+        end = time.perf_counter() + self.poll_gap
+        while time.perf_counter() < end:
+            pass
 
     # -- transport ---------------------------------------------------------
 
@@ -454,7 +483,11 @@ class Bridge:
         polls = 0
         nacks = 0
         sends = 1
+        first_poll = True
         while True:
+            if not first_poll:
+                self._pace()
+            first_poll = False
             hdr = self._rx(3)
             polls += 1
             if hdr[0] == 0xFF and hdr[1] == 0xFF:
@@ -1472,6 +1505,8 @@ def add_common(parser, suppress: bool):
                         help="CH341A I2C clock (default 100k); 400k+ is not supported by the slave")
     parser.add_argument("--dll", default=default(DEFAULT_DLL), help="path to CH341DLLA64.DLL")
     parser.add_argument("--timeout", type=float, default=default(3.0), help="command BUSY timeout in seconds")
+    parser.add_argument("--poll-gap", type=float, default=default(250.0),
+                        help="pause between BUSY polls, microseconds (default 250; 0 = back-to-back)")
     parser.add_argument("--json", action="store_true", default=default(False), help="machine-readable output")
     parser.add_argument("--verbose", action="store_true", default=default(False), help="print every I2C frame")
     parser.add_argument("--no-color", action="store_true", default=default(False), help="disable ANSI colours")
@@ -1547,7 +1582,7 @@ def main(argv=None) -> int:
 
     try:
         with Ch341I2C(args.dll, speed=SPEEDS[args.speed]) as io:
-            bridge = Bridge(io, addr=addr, trace=trace)
+            bridge = Bridge(io, addr=addr, trace=trace, poll_gap=args.poll_gap / 1e6)
             if not args.json:
                 print(out.c.bold("owbridge demo") + out.c.dim("  addr 0x%02X  %s  %s"
                                                                % (addr, args.speed, args.dll)))
