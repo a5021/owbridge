@@ -401,9 +401,9 @@ override it at runtime with `OW_SET_POWER`.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 25 124 B | 2 416 B |
-| SPI | 21 704 B | 2 196 B |
-| I2C | 21 812 B | 2 044 B |
+| UART | 25 152 B | 2 416 B |
+| SPI | 21 732 B | 2 196 B |
+| I2C | 21 856 B | 2 048 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack; about 1.6-2.0 KB remains below the 4 KB limit. The linker script
