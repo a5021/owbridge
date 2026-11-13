@@ -56,8 +56,10 @@ RX 00 50 28 52 42 57 4f 00 01 30 04 ... 7c 0b fd 98
 Long captures below are trimmed with `...`; the shapes and values are from the
 real runs.
 
-On UART and SPI the frame is wrapped in the transport header and a CRC-8; the
-I2C slave uses the bare frame above.
+On UART the frame is wrapped in `AA 55` / `5A A5` and a CRC-8; SPI uses the
+bare frame between two CS phases, and the I2C slave uses the bare frame above.
+Neither SPI nor I2C has a transport checksum (see the README for the integrity
+matrix).
 
 ### What happens inside
 
@@ -85,6 +87,24 @@ An **instant** command is completed inside `bridge_submit()` before the I2C
 STOP handler returns: cached queries, configuration, statistics. A **long**
 command starts the 1-Wire engine and answers `BUSY`; the main loop finishes it
 while the host keeps polling. Nothing blocks.
+
+### What can go wrong
+
+- **No checksum on SPI/I2C.** A bit flip that keeps the length plausible is
+  not detected by the transport; only UART has a CRC-8. Payloads with their own
+  check (ROM CRC-8, DS2431 CRC-16, config CRC-32) are still protected.
+- **A missed START while a long command runs.** The polled slave does not
+  sample SCL during one `bridge_poll()` step after STOP. A transaction that
+  starts within that window is lost; the host sees a NACK or `FF FF` and must
+  retry, or leave a gap after STOP.
+- **`CONFIG_SET` and `EEPROM_WRITE` are irreversible.** Both now verify the
+  complete payload before erasing or copying; a bad block is rejected with
+  `CRC_ERROR` / `PARAM_ERROR` and the stored data is unchanged. `CONFIG_SET`
+  also blocks the polled I2C sampler while the flash page is erased and
+  programmed, so the host must retry across it.
+- **A wedged I2C bus.** The 50 ms valve releases `bridge_poll()` only when no
+  SCL/SDA edge has been seen for 50 ms; a live frame, however slow, keeps the
+  1-Wire state machine deferred but is never cut in half.
 
 The dispatch table has one entry per command:
 
@@ -271,8 +291,9 @@ malformed frames, stale buffers, queue/abort churn and parser fuzz:
 | Bulk latency min / avg / max | 13.377 / 13.607 / 52.242 ms |
 
 The bulk loop occupied roughly 95% of wall time. The only recoverable effect
-was the CH341A's occasional NACK on a write address phase; the harness resent
-the frame, exactly like the demo does. Details:
+was an occasional NACK on a write address phase (a START that arrived while
+the firmware was completing a long-command poll step); the harness resent the
+frame, exactly like the demo does. Details:
 [`i2c-torture-test.md`](i2c-torture-test.md).
 
 ## Latency, in two numbers
@@ -289,6 +310,9 @@ The millisecond figures are dominated by the USB adapter. Inside the firmware,
 the worst instant command (`OW_GET_DEVICES` with nine cached ROMs) takes about
 **10 us** from STOP detection to the latched response, which is why the CH341A
 can chain a write and a read with its ~15 us gap and still see the answer.
+That does **not** apply to long commands: the first `bridge_poll()` after STOP
+can take tens of microseconds, so a chained START may be missed and retried
+(see [`i2c-timing.md`](i2c-timing.md)).
 
 ## Where the code lives
 

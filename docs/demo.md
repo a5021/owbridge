@@ -56,10 +56,21 @@ transaction. Two adapter quirks shape the transport:
   `QUEUE_FULL`. If the echoed byte does not match the request, the write was
   lost; the demo re-sends it (up to three times) instead of returning a stale
   frame.
+* While a long command is `BUSY`, a transaction chained a few microseconds
+  after STOP can be missed: the firmware is completing one library poll step.
+  The demo's retry rules above absorb this. A host that needs every frame
+  accepted on the first try must leave a gap after STOP (measured bound
+  pending; >= 250 us is safe), or use UART, whose frames carry a CRC-8.
+
+The I2C frame has no checksum; see the transport integrity table in the
+README. Commands with self-checking payloads (ROM CRC-8, DS2431 CRC-16,
+configuration CRC-32) still catch corruption end to end.
 
 The adapter is used at the rate it actually produces. `CH341SetStream(0, 1)` is
 nominal 100 kHz and measures about 115 kHz on the bench; the polled software
-slave is validated at that rate. 400 kHz and 750 kHz are not offered.
+slave is validated at that rate. 400 kHz and 750 kHz are not offered. The 20 kHz
+option remains usable for very long frames: the safety valve now waits for
+50 ms *without bus edges*, so a 163-byte frame taking ~74 ms is not interrupted.
 
 ## Scenarios
 

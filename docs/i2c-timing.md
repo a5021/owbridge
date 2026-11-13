@@ -10,6 +10,11 @@ and SDA often enough for a reliable 100 kHz bus?
 - Timer: TIM3 at 1 MHz (16-bit, wrap handled in software).
 - The profiler measures three intervals on every main-loop iteration:
   `host_i2c_soft_poll()`, `bridge_poll()`, and the full loop.
+- The extended profiler also records a log2 histogram of every
+  `bridge_poll()` duration, the longest gap between two polls, the duration of
+  `bridge_submit()`, the time spent in `config_set()`, and how often the I2C
+  bus went from idle to busy across one poll (a START that arrived while the
+  firmware was inside `bridge_poll()`).
 - After one second the firmware runs a one-off command experiment (reset,
   search, broadcast convert, read-all) and stores the wall-clock durations.
 - The values are read from RAM over SWD; nothing is printed. No I2C master and
@@ -46,9 +51,54 @@ time.
 - At 100 kHz the SCL half-period is 5 us. The production loop without the
   profiler is about 2-3 us, so the slave samples each half-period at least
   once.
-- While an I2C transaction is active, `bridge_poll()` is skipped (with a
-  50 ms safety valve), so the busy loop is shorter than the figures above.
+- While an I2C transaction is active, `bridge_poll()` is skipped, so the busy
+  loop is shorter than the figures above. The safety valve releases the poll
+  only after 50 ms with no SCL/SDA edge, so it fires on a wedged bus, never in
+  the middle of an active frame (a 163-byte frame at 20 kHz lasts ~74 ms but
+  keeps clocking).
 - 400 kHz would need a 1.25 us half-period and is not supported.
+
+## Idle versus active bridge_poll
+
+The `bridge_poll()` numbers above are the **idle** case: the poll returns in
+1-2 us while no command is running. They do not bound the cost while a long
+command is in flight.
+
+The I2C main loop deliberately skips `bridge_poll()` between START and STOP,
+so a command advances only after STOP. The first poll after STOP executes one
+library poll step, which can cover more than one work event. The library's CPU
+profile (`stm32-async-1wire` v3.1.2, `docs/cpu-profile.md`, F030 at 8 MHz)
+gives two bounds:
+
+| Metric | Cycles | Time at 48 MHz | Time with flash wait states |
+|--------|--------|----------------|-----------------------------|
+| worst driver work event (measurement) | 2 857 | 59.5 us | ~65-85 us |
+| worst public poll, measurement phase | 7 217 | 150 us | ~160-210 us |
+| worst driver work event (search) | 1 117 | 23.3 us | ~25-35 us |
+| worst public poll, search phase | 3 356 | 70 us | ~70-100 us |
+
+The public-poll maxima include the CPU-profile example's completion callback
+(UART formatting); the bridge's callback is lighter, so the real firmware
+should sit between the two rows. The conservative host bound is therefore the
+public-poll row: **allow >= 250 us after STOP** until the profiler replaces it
+with a measurement. The extended profiler reports the actual value in
+`prof_bridge_max`, `prof_bridge_last` and `prof_bridge_hist[8]`;
+`prof_start_missed` counts transactions whose START arrived during that window.
+Bench results will replace these estimates when the ST-LINK is available again.
+
+Consequence for the host: while a long command is `BUSY`, a START that arrives
+less than one worst-case poll after STOP can be missed. At 100 kHz a byte takes
+90 us, so losing the first START loses the address phase; the bridge NACKs the
+read address (I2C) and the host sees `0xFF`. This is the most likely explanation
+for the NACK counts on `TEMP_READ_ALL` and `OW_SEARCH` in the torture test; the
+earlier "adapter-only" explanation was not demonstrated. The profiler's
+`prof_start_missed` counter settles it on the bench.
+
+Host rule for long operations: either space transactions by more than the
+worst-case poll (measured value pending; use >= 250 us conservatively), or
+treat a NACK / all-`FF` read as "not ready" and retry, as `Bridge.command()`
+already does. The CH341A `CH341StreamI2C(wlen, rlen)` combined call is the
+worst case because its STOP-to-START turnaround is only about 15 us.
 
 ## Command turnaround after STOP
 
@@ -81,7 +131,9 @@ long 1-Wire operations still use the `BUSY`/poll flow.
 
 Host rule: no mandatory gap for instant commands. For long operations, poll
 the 3-byte header until the status is not `BUSY`; a NACK/`0xFF` still means
-"not ready" and can be retried.
+"not ready" and can be retried. If the host instead chains transactions with a
+few-microsecond turnaround, see "Idle versus active bridge_poll" above for the
+gap it must allow.
 
 ## Validation
 

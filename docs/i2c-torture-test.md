@@ -124,9 +124,16 @@ attributing it to a command.
 
 These are retries, not data errors: the CH341A reports a NACK as an all-`FF`
 read, the harness retries, and the command completes with a valid response.
-The first status read of a 1-Wire command can arrive while the main loop is
-starting that operation; the read address is then missed. The pure I2C bulk
-path and all instant queries had no NACKs at all.
+The pure I2C bulk path and all instant queries had no NACKs at all.
+
+The NACKs on long commands have a firmware-side mechanism, not just an adapter
+quirk: while a command is `BUSY`, the main loop skips `bridge_poll()` between
+START and STOP, then runs one library event after STOP. That event can take
+tens of microseconds (see `docs/i2c-timing.md`), so a START chained ~15 us
+after STOP is missed and the read address is NACKed. The harness retries, so
+the command still completes. The earlier explanation that the adapter alone
+caused these NACKs was not proven; the profiler now counts the exact event
+(`prof_start_missed`, `prof_bridge_max`).
 
 ## Host write losses
 
@@ -137,11 +144,13 @@ latched response then belongs to the previous command. A focused probe saw
 6 losses in 180 writes; over the whole run the harness counted 18 lost writes
 and resent each one, and every command completed.
 
-This is the same quirk `Bridge.command()` already handles in the demo: if the
-response does not echo the command code, the write was not accepted and is
-sent again (up to three times). It is a host/adapter timing property, not a
-firmware defect: `bridge_submit()` never saw those frames, so no queue slot,
-counter or response was consumed.
+This is the same class of transient as the read NACKs: a write that arrives
+while the firmware is still completing a poll step is not sampled from its
+first START, so the slave does not see the frame. `Bridge.command()` already
+handles it in the demo: if the response does not echo the command code, the
+write was not accepted and is sent again (up to three times). The lost write
+never reached `bridge_submit()`, so no queue slot, counter or response was
+consumed.
 
 The first version of the torture harness did not resend and reported 17
 queue-state mismatches in the 60-minute run; adding the echo check and a
@@ -176,5 +185,6 @@ near-saturated traffic and aggressive malformed-frame injection with:
   churn while a conversion was running;
 - stable device cache, ROM CRCs and EEPROM contents.
 
-The only recoverable transport effect was the known CH341A write-address NACK
-on back-to-back writes, which the host handles by resending the frame.
+The only recoverable transport effect was the write-address NACK on
+back-to-back writes (a START that arrived while the firmware was completing a
+long-command poll step), which the host handles by resending the frame.

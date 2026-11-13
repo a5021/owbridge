@@ -98,9 +98,9 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
   DMA1 channel 2 and SPI1_TX is DMA1 channel 3, which the 1-Wire engine owns.
 - **I2C**: software slave, polled SCL/SDA edges in the main loop. No EXTI, no
   DMA (GPIO edges cannot trigger DMA). During an I2C transaction the 1-Wire
-  poll is deferred (with a 50 ms safety valve), so its encode/decode cannot
-  drop SCL edges at 100 kHz; the 1-Wire timing is hardware-generated, so only
-  the state machine is delayed. A read transfers the response straight from
+  poll is deferred (with a 50 ms no-edge safety valve), so its encode/decode
+  cannot drop SCL edges at 100 kHz; the 1-Wire timing is hardware-generated, so
+  only the state machine is delayed. A read transfers the response straight from
   the bridge's latched buffer; there is no `memcpy` in the SCL edge handler,
   because a copy of up to 163 bytes would outlast the 5 us low phase of a
   100 kHz clock. The dispatcher is a 256-entry table indexed by the command
@@ -125,15 +125,48 @@ While an I2C transaction is active `bridge_poll()` is skipped, so the busy
 loop is shorter still. The SCL half-period at 100 kHz is 5 us, so 100 kHz has
 margin; 400 kHz (1.25 us) does not.
 
+**The 1-2 us `bridge_poll()` figure is the idle case.** While a long command
+is running, the first `bridge_poll()` after STOP executes one library event,
+which is much heavier. The library's CPU profile (`stm32-async-1wire` v3.1.2,
+F030 at 8 MHz) reports a worst driver work event of 2 857 cycles (59.5 us at
+48 MHz) and a worst public poll of 7 217 cycles (150 us at 48 MHz). The latter
+includes the example's completion callback; this firmware's callback is much
+lighter, but until the extended profiler is read on the bench the honest design
+bound is the public-poll figure plus flash wait states: **roughly 160-210 us**
+for the measurement path and **70-100 us** for search. During that window the
+slave is not sampling SCL, so a START/clock burst that arrives earlier can be
+missed. This is the mechanism behind the NACKs on `TEMP_READ_ALL` and
+`OW_SEARCH` in the torture test, not necessarily an adapter defect.
+
+Host contract while a long command is `BUSY`: either leave at least **250 us**
+after STOP before the next START (a conservative value covering the bound
+above; the profiler will replace it with the measured worst case), or keep the
+current behaviour and treat a NACK or an all-`FF` read as "not ready", then
+retry. The demo and the torture harness do the latter. Instant commands are
+unaffected: they finish inside the STOP handler.
+
+The 50 ms safety valve now requires **no SCL/SDA edges for 50 ms**, not merely
+a transaction longer than 50 ms. A 163-byte frame at 20 kHz lasts about 74 ms
+but keeps clocking, so it is never interrupted; the valve only releases a
+wedged or held bus. 100 kHz remains the validated rate.
+
+`CONFIG_SET` is the one command that blocks the sampler by design: page erase
+and programming run inside a single `bridge_poll()` and take tens of
+milliseconds. The host must therefore retry (`NACK` / `FF FF`) across it; the
+demo's 10 s timeout covers this. The profiler records the actual duration in
+`prof_config_set_us`.
+
 ### I2C host turnaround
 
-The command handler is short enough to survive the CH341A's ~15 us
-STOP-to-START turnaround. Instant commands (version, cached queries, config,
-stats) are completed inside `bridge_submit()` before the STOP handler returns,
-so the read that follows immediately sees the final response. Long 1-Wire
-commands start their engine at STOP and latch `BUSY`; the main-loop poll
-completes them, so the address is always acknowledged and the host polls the
-response as usual.
+The STOP handler is short enough to survive the CH341A's ~15 us
+STOP-to-START turnaround for instant commands: version, cached queries,
+config and stats are completed inside `bridge_submit()` before the handler
+returns, so the read that follows immediately sees the final response. Long
+1-Wire commands start their engine at STOP and latch `BUSY`; the first
+main-loop poll after STOP completes one step and can outlast the 15 us
+turnaround, so a chained read address may be NACKed and must be retried (see
+the timing margin above). Once the host is polling, the response arrives as
+usual.
 
 Measured worst case for an instant command on the 9-device bench: about 10 us
 from STOP detection to the latched response. No host-side gap is required:
@@ -164,6 +197,42 @@ The software I2C slave uses the same bare frame: a write transaction delivers
 `[status][cmd][len][data...]`.
 
 `crc8` is the Dallas/Maxim CRC-8 (polynomial 0x8C).
+
+### Transport integrity
+
+Only UART frames carry a checksum. The SPI and software-I2C frames have none:
+they rely on CS / START-STOP framing, the 7-bit address ACK (I2C only), and the
+per-command length and argument checks in the `br_cmd_desc_t` table.
+
+| Transport | Framing | Wire checksum | Undetected by the transport |
+|-----------|---------|---------------|-----------------------------|
+| UART | `AA 55` header, length | CRC-8 over `cmd`..`data` (both directions) | only patterns beyond CRC-8 (all single-bit and bursts <= 8 bits are caught) |
+| SPI | two CS-framed phases | none | any bit flip that keeps the length plausible |
+| I2C | START/STOP, 7-bit address + ACK | none | any bit flip that keeps the length plausible |
+
+Commands whose payload carries its own end-to-end check are still protected on
+SPI/I2C: a ROM is checked with the Dallas CRC-8, a DS2431 scratchpad read with
+CRC-16, and a configuration block with CRC-32. A corrupted length, unknown
+command or invalid argument is rejected with `PARAM_ERROR` / `INVALID_CMD`.
+For transport-level integrity on SPI/I2C, wrap the frame in an application
+checksum; adding CRC-8 to those frames would be a protocol v2 change.
+
+### Destructive commands
+
+Both commands that can leave the device in a bad state verify the complete
+payload before the irreversible step:
+
+- **`CONFIG_SET`** (0x51) checks the `OWBR` magic, the version, every field
+  range and the CRC-32 over the first 36 bytes *before* the flash page is
+  erased. A checksum mismatch returns `CRC_ERROR`; a bad header or field
+  returns `PARAM_ERROR`. The page is never written with a corrupted
+  `i2c_addr`, so the I2C build cannot be bricked by a bad frame. Previously
+  the firmware recomputed the CRC instead of checking it.
+- **`EEPROM_WRITE`** (0x31) uses the DS2431 driver's verification: the
+  scratchpad CRC-16, the TA/ES echo, the PF bit and the read-back payload are
+  all checked. A failure aborts **before** Copy Scratchpad, returning
+  `CRC_ERROR` (a Write Scratchpad failure returns `BUS_ERROR`), so corrupted
+  data is never programmed. A rejected write leaves the page unchanged.
 
 ### AT commands (UART, for debugging)
 
