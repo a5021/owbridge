@@ -189,3 +189,6 @@ near-saturated traffic and aggressive malformed-frame injection with:
 The only recoverable transport effect was the write-address NACK on
 back-to-back writes (a START that arrived while the firmware was completing a
 long-command poll step), which the host handles by resending the frame.
+
+The randomized, layered complement to this fixed workload is described in
+[`i2c-fuzz.md`](i2c-fuzz.md).

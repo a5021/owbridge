@@ -500,13 +500,17 @@ the demo uncovered are in [`docs/demo.md`](docs/demo.md).
 [`tools/protocol_test.py`](tools/protocol_test.py) reuses the same transport for
 protocol conformance. It sends every command at its minimum, maximum and
 out-of-range payload lengths, checks the semantic argument rules, replays stale
-buffer contents, and can fuzz the parser:
+buffer contents, exercises the transport directly (partial and over-long
+reads, truncated headers, foreign addresses), and can fuzz the parser:
 
 ```text
 python protocol_test.py
 python protocol_test.py --fuzz 10000
 python protocol_test.py --destructive
 ```
+
+The randomized host-link fuzzing session and its coverage are summarized in
+[`docs/i2c-fuzz.md`](docs/i2c-fuzz.md).
 
 ## Source layout
 
@@ -530,6 +534,7 @@ docs/optimization-report.md  what was measured, changed and rejected in the
                             100 kHz service-window work: retries 3 827 ->
                             about 2 300 (-40%), 0 failed commands, address
                             NACKs 4.2% -> 1.9%, and the four rejected ideas
+docs/i2c-fuzz.md    layered host-link fuzzing: coverage, oracles, results
 ```
 
 ## Notes for the library maintainers

@@ -14,8 +14,9 @@ usable from scripts.
 
 `tools/protocol_test.py` reuses that transport for protocol conformance: it
 sends every command at its minimum, maximum and out-of-range payload lengths,
-checks the semantic argument rules, replays stale buffer contents, and can
-fuzz the parser. It is described under
+checks the semantic argument rules, replays stale buffer contents, exercises
+the transport directly (partial and over-long reads, truncated headers,
+foreign addresses), and can fuzz the parser. It is described under
 [protocol tests](#protocol_testpy) below.
 
 ```text
@@ -334,8 +335,8 @@ Self test
 
 ### `protocol_test.py`
 
-Boundary matrix, argument checks, stale-buffer replay and a 10 000-frame fuzz
-run on the 9-device bench. Only the first and last lines are shown; the full
+Boundary matrix, argument checks, stale-buffer replay, the transport cases and
+a 10 000-frame fuzz run on the 9-device bench. Only the first and last lines are shown; the full
 log is kept outside the repository.
 
 ```text
@@ -351,12 +352,13 @@ PASS  structure  1-byte frame is unanswered  [PARAM_ERROR/0x20 -> PARAM_ERROR/0x
 PASS  structure  padded frame (dlen=0, 4 extra)  [PARAM_ERROR cmd=0x0F len=0]
 PASS  stale      rejected frames never touch the bus  [commands 100 -> 101 (delta 1)]
 PASS  stale      bus alive after rejects  [reset present=True]
+PASS  transport  read without a write returns the latched frame  [00 52 1a 6f]
+PASS  transport  bytes past the frame read as FF  [ff ff ff ff ff ff ff ff]
 PASS  fuzz       10000 frames accepted without bus errors
-PASS  fuzz       uptime kept running  [63 -> 76 s]
 PASS  verify     device count unchanged  [search=9 cached=9 baseline=9]
-PASS  verify     temperature array intact  [7 values, baseline 7]
+PASS  destructive CONFIG_SET round-trip  [40 bytes]
 
-RESULT: PASS  (157 passed, 0 failed, 10 skipped)
+RESULT: PASS  (178 passed, 0 failed, 10 skipped)
 ```
 
 The ten skips are valid payloads the tool deliberately does not execute:
