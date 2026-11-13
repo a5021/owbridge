@@ -130,8 +130,13 @@ chained read is served. The misses cluster at the **poll cadence** (about
 is still 10-50 us long. Deferring the command start or adding a quiet window
 after STOP does not help and was measured to make it worse (7.7% and 16.4%
 NACKs), because those changes move polls into the gap instead of shortening
-them. Shortening the library's work events is the only lever that reduces the
-miss rate; the table-driven CRC and codec do exactly that.
+them. What matters is the total time the CPU spends inside `bridge_poll()`,
+not the length of the longest single step. That was measured the hard way:
+splitting the decode into four-byte chunks across polls made the individual
+steps shorter (the 32-byte read dropped from 70 to 13 us) but raised the
+end-to-end retry count from 2 746 to 3 899, because more calls with the same
+work cost more overhead in total. Reducing the work itself (the table-driven
+CRC and codec) is the lever that helps.
 
 Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
