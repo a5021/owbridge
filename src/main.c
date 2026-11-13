@@ -42,6 +42,7 @@ int main(void)
 #if defined(HOST_IF_I2C)
     uint32_t i2c_edge_ms = 0u;
     uint32_t i2c_edges = 0u;
+    uint32_t i2c_check_ms = 0u;
     uint8_t i2c_was_busy = 0u;
 #endif
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
@@ -109,21 +110,29 @@ int main(void)
             profile_start_check(1u, host_i2c_soft_busy());
 #endif
         } else {
-            uint32_t edges = host_i2c_soft_edge_count();
+            /* The valve only needs millisecond resolution. On a fast 100 kHz
+               transaction the loop runs several times per millisecond, so
+               gate the edge bookkeeping on a new millisecond: the busy path
+               must stay short enough to sample every SCL half-period. */
             if (!i2c_was_busy) {
                 i2c_was_busy = 1u;
-                i2c_edges = edges;
+                i2c_edges = host_i2c_soft_edge_count();
                 i2c_edge_ms = now_ms;
-            } else if (edges != i2c_edges) {
-                i2c_edges = edges;
-                i2c_edge_ms = now_ms;
-            } else if ((uint32_t)(now_ms - i2c_edge_ms) > 50u) {
-                /* Safety valve: only a bus with no edges for 50 ms (a wedged
-                   master or a held clock) may delay the 1-Wire state machine.
-                   A valid long frame keeps producing edges, so it is never
-                   interrupted by a long bridge poll. */
-                bridge_poll();
-                i2c_edge_ms = now_ms;
+                i2c_check_ms = now_ms;
+            } else if (now_ms != i2c_check_ms) {
+                uint32_t edges = host_i2c_soft_edge_count();
+                i2c_check_ms = now_ms;
+                if (edges != i2c_edges) {
+                    i2c_edges = edges;
+                    i2c_edge_ms = now_ms;
+                } else if ((uint32_t)(now_ms - i2c_edge_ms) > 50u) {
+                    /* Safety valve: only a bus with no edges for 50 ms (a
+                       wedged master or a held clock) may delay the 1-Wire
+                       state machine. A valid long frame keeps producing
+                       edges, so it is never interrupted by a long poll. */
+                    bridge_poll();
+                    i2c_edge_ms = now_ms;
+                }
             }
         }
 #endif
