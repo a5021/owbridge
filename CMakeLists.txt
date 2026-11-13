@@ -104,6 +104,11 @@ endif()
 ow_add_library(owlib ${_ow_lib_args})
 
 target_compile_options(owlib PRIVATE ${OW_OPT} -flto)
+if(OWBRIDGE_PROFILE)
+    # Let the profiled build time the driver's real work events (OW_PROFILE
+    # hooks); the application provides the two functions in src/profile.c.
+    target_compile_definitions(owlib PRIVATE OW_PROFILE=1)
+endif()
 target_link_options(owlib INTERFACE -flto)
 
 # ---------------------------------------------------------------------------

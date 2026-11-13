@@ -44,6 +44,9 @@ extern volatile uint32_t prof_start_missed;     /**< START during bridge_poll */
 extern volatile uint32_t prof_start_missed_max; /**< poll duration of the worst */
 
 extern volatile uint32_t prof_submit_max;       /**< worst bridge_submit() time */
+extern volatile uint32_t prof_work_max;         /**< worst library work event (OW_PROFILE) */
+extern volatile uint32_t prof_sink_max;         /**< worst search sink (cache add) */
+extern volatile uint32_t prof_lib_max;          /**< worst onewire_search_poll() call */
 extern volatile uint32_t prof_config_set_us;    /**< wall time of config_set() */
 
 extern volatile uint32_t prof_cmd_reset_ms;
@@ -65,6 +68,10 @@ void profile_submit_end(void);
 void profile_config_set_begin(void);
 void profile_config_set_end(void);
 void profile_experiment(void);
+void profile_sink_begin(void);
+void profile_sink_end(void);
+void profile_lib_begin(void);
+void profile_lib_end(void);
 
 #else
 
@@ -85,6 +92,10 @@ static inline void profile_submit_end(void) {}
 static inline void profile_config_set_begin(void) {}
 static inline void profile_config_set_end(void) {}
 static inline void profile_experiment(void) {}
+static inline void profile_sink_begin(void) {}
+static inline void profile_sink_end(void) {}
+static inline void profile_lib_begin(void) {}
+static inline void profile_lib_end(void) {}
 
 #endif
 

@@ -39,6 +39,9 @@ volatile uint32_t prof_start_missed = 0u;
 volatile uint32_t prof_start_missed_max = 0u;
 
 volatile uint32_t prof_submit_max = 0u;
+volatile uint32_t prof_work_max = 0u;
+volatile uint32_t prof_sink_max = 0u;
+volatile uint32_t prof_lib_max = 0u;
 volatile uint32_t prof_config_set_us = 0u;
 
 volatile uint32_t prof_cmd_reset_ms = 0u;
@@ -51,6 +54,10 @@ static uint32_t t_loop;
 static uint32_t t_i2c;
 static uint32_t t_bridge;
 static uint32_t t_submit;
+static uint32_t t_work;
+static uint8_t t_phase;
+static uint32_t t_sink;
+static uint32_t t_lib;
 static uint32_t t_config;
 
 /* Gap tracking between consecutive bridge_poll() calls. */
@@ -195,6 +202,54 @@ static void run_cmd(const uint8_t *frame, uint8_t len, volatile uint32_t *out_ms
         bridge_poll();
     }
     *out_ms = board_millis() - t0;
+}
+
+/* Library work-event hooks (OW_PROFILE): the driver calls these around the
+   branch that actually advances its state machine, excluding the application
+   sink. The firmware's search sink is timed separately, so a long poll can be
+   attributed to the driver or to the callback. */
+void ow_profile_work_begin(void)
+{
+    t_work = now_us();
+}
+
+void ow_profile_phase(uint8_t phase)
+{
+    t_phase = phase;
+}
+
+void ow_profile_work_end(void)
+{
+    uint32_t d = dt_us(t_work);
+    if (d > prof_work_max) {
+        prof_work_max = d;
+    }
+}
+
+void profile_lib_begin(void)
+{
+    t_lib = now_us();
+}
+
+void profile_lib_end(void)
+{
+    uint32_t d = dt_us(t_lib);
+    if (d > prof_lib_max) {
+        prof_lib_max = d;
+    }
+}
+
+void profile_sink_begin(void)
+{
+    t_sink = now_us();
+}
+
+void profile_sink_end(void)
+{
+    uint32_t d = dt_us(t_sink);
+    if (d > prof_sink_max) {
+        prof_sink_max = d;
+    }
 }
 
 void profile_experiment(void)

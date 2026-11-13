@@ -138,6 +138,26 @@ end-to-end retry count from 2 746 to 3 899, because more calls with the same
 work cost more overhead in total. Reducing the work itself (the table-driven
 CRC and codec) is the lever that helps.
 
+### Where the search time goes
+
+The library's `OW_PROFILE` hooks are wired into the profiled build
+(`-DOWBRIDGE_PROFILE=ON` defines `OW_PROFILE=1` for the library), and the
+search sink is timed separately, so a long poll can be attributed to the
+driver or to the application callback:
+
+| Part of the search | Time |
+|---|---|
+| per-bit arming (`onewire_write_then_read`) | about 6 us, once per bit slot |
+| device found: CRC, leaf bookkeeping, next reset | about 13 us |
+| device found: application sink (`cache_add`) | 10 us before, 4 us after the word compare |
+
+The device-found step is the longest single poll, but it runs once per device
+(nine times per search) while the per-bit steps run 64 times per device. The
+retry budget tracks the *sum* of all poll time, so the per-bit arming
+dominates; speeding up the sink (two word compares instead of a libc
+`memcmp()` call per cached ROM) is real but does not move the end-to-end
+count outside run-to-run noise.
+
 Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
 retry, as `Bridge.command()` already does. `CONFIG_SET` blocks for ~23 ms and

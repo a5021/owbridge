@@ -246,7 +246,9 @@ void ds18b20_busy(unsigned action)
 
 static uint8_t search_sink(const uint8_t *rom)
 {
+    profile_sink_begin();
     cache_add(rom);
+    profile_sink_end();
     return 0u; /* continue the search */
 }
 
@@ -552,7 +554,10 @@ static void start_ow_search(const br_command_t *cmd)
 
 static uint8_t poll_ow_search(br_response_t *resp)
 {
-    if (!onewire_search_poll()) {
+    profile_lib_begin();
+    uint8_t done = onewire_search_poll();
+    profile_lib_end();
+    if (!done) {
         return 0u;
     }
     resp->status = BR_OK;
