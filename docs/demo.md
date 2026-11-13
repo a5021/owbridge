@@ -56,11 +56,12 @@ transaction. Two adapter quirks shape the transport:
   `QUEUE_FULL`. If the echoed byte does not match the request, the write was
   lost; the demo re-sends it (up to three times) instead of returning a stale
   frame.
-* While a long command is `BUSY`, a transaction chained a few microseconds
-  after STOP can be missed: the firmware is completing a poll step or building
-  the next command (45-93 us on this bench). The demo's retry rules above
-  absorb this. A host that needs every frame accepted on the first try must
-  leave at least 100 us after STOP (250 us is comfortable), or use UART,
+* While a long command is `BUSY`, a START can land inside a `bridge_poll()`
+  step (10-50 us) and be missed. A logic-analyzer capture at 100 kHz shows
+  these misses at the poll cadence (median 96 us after the previous STOP),
+  not at the 15 us chained read that follows STOP. The demo's retry rules
+  above absorb them. A host that needs every frame accepted on the first try
+  must leave at least 100 us after STOP (250 us is comfortable), or use UART,
   whose frames carry a CRC-8. `CONFIG_SET` blocks for ~23 ms and always needs
   the retry rule.
 

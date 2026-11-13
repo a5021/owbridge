@@ -95,11 +95,11 @@ than the 150 us extrapolated from the library figure.
 
 ## Host consequence: missed STARTs
 
-While a long command is `BUSY`, a START that arrives during one of those
-windows is missed. At 100 kHz a byte takes 90 us, so losing the first START
-loses the address phase; the bridge NACKs the read address and the host sees
-`0xFF`. A focused probe (30 searches, 40 `TEMP_READ_ALL`, 40 32-byte writes,
-10 EEPROM writes) measured:
+While a long command is `BUSY`, a START that arrives while the bridge is
+inside a `bridge_poll()` step is missed: the slave does not sample SCL during
+that step, so the address phase is lost, the read address is NACKed and the
+host sees `0xFF`. A focused probe (30 searches, 40 `TEMP_READ_ALL`, 40 32-byte
+writes, 10 EEPROM writes) measured:
 
 | Speed | Commands | Retries (NACK / all-`FF`) | Failed commands |
 |-------|----------|---------------------------|-----------------|
@@ -107,10 +107,31 @@ loses the address phase; the bridge NACKs the read address and the host sees
 | 100 kHz | 120 | 3 827 | 0 |
 
 At 20 kHz the adapter's transaction turnaround is longer than the blocking
-window, so nothing is missed. At 100 kHz the ~15 us turnaround is much shorter
-than a 45-93 us poll, so retries are expected. This is the most likely
-explanation for the NACK counts in the torture test; the earlier
-"adapter-only" explanation was not demonstrated.
+window, so nothing is missed. At 100 kHz the windows are much shorter than
+the turnaround, so retries are expected.
+
+### Logic-analyzer measurement at 100 kHz
+
+A Saleae Logic (fx2lafw, 4 MHz) on SCL/SDA decoded one search command and
+settles where the STARTs are actually lost:
+
+| Measurement | Value |
+|---|---|
+| SCL half-period | 4.00-4.50 us (median 4.25 us, about 118 kHz) |
+| STOP to chained START after a write | 15 us |
+| STOP to next poll START while `BUSY` | median about 108 us |
+| Address NACKs | 31 of 742 frames (4.2%) |
+| Gap since the previous STOP at a NACK | median 96 us |
+
+All NACKs were on the read address (`0x61`). Only one of the sampled misses
+sat at the 15 us chained gap: the STOP handler finishes in time and the
+chained read is served. The misses cluster at the **poll cadence** (about
+108 us), where the host's next START lands inside a `bridge_poll()` step that
+is still 10-50 us long. Deferring the command start or adding a quiet window
+after STOP does not help and was measured to make it worse (7.7% and 16.4%
+NACKs), because those changes move polls into the gap instead of shortening
+them. Shortening the library's work events is the only lever that reduces the
+miss rate; the table-driven CRC and codec do exactly that.
 
 Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and

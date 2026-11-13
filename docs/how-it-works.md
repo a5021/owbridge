@@ -94,11 +94,13 @@ while the host keeps polling. Nothing blocks.
   not detected by the transport; only UART has a CRC-8. Payloads with their own
   check (ROM CRC-8, DS2431 CRC-16, config CRC-32) are still protected.
 - **A missed START while a long command runs.** The polled slave does not
-  sample SCL during the first `bridge_poll()` after STOP (45-93 us) or while
-  building a 32-byte write (93 us). A transaction that starts within that
-  window is lost; the host sees a NACK or `FF FF` and must retry, or leave
-  about 100 us after STOP. Measured: 3 827 retries over 120 long commands at
-  100 kHz, none at 20 kHz, and no failed command.
+  sample SCL during a `bridge_poll()` step (10-50 us). A START that arrives
+  inside one is lost; the host sees a NACK or `FF FF` and must retry, or leave
+  about 100 us after STOP. A logic-analyzer capture at 100 kHz puts the
+  misses at the poll cadence (median 96 us since the previous STOP), not at
+  the 15 us chained read after STOP: 4.2% of the read addresses were NACKed.
+  Measured: 3 827 retries over 120 long commands at 100 kHz, none at 20 kHz,
+  and no failed command.
 - **`CONFIG_SET` and `EEPROM_WRITE` are irreversible.** Both now verify the
   complete payload before erasing or copying; a bad block is rejected with
   `CRC_ERROR` / `PARAM_ERROR` and the stored data is unchanged. `CONFIG_SET`
