@@ -526,6 +526,8 @@ tools/owbridge_demo.py stdlib-only host demo for the I2C build
 tools/protocol_test.py protocol boundary and fuzz tests (same transport)
 docs/demo.md        demo scenarios, captured output and quirks
 docs/how-it-works.md illustrated walkthrough with captured traffic
+docs/optimization-report.md  what was measured, changed and rejected in the
+                            100 kHz service-window work
 ```
 
 ## Notes for the library maintainers

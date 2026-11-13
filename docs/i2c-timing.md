@@ -192,6 +192,9 @@ main loop could run a 1-Wire step in the NACK-to-STOP window and miss the
 STOP edge; the extra `I2C_TX_END` state closes the window without adding an
 interrupt.
 
+The full optimization pass (measured changes, rejected experiments and the
+remaining limits) is in [optimization-report.md](optimization-report.md).
+
 ## Command turnaround after STOP
 
 The first implementation copied the response twice (poll into `bus.resp.data`,
