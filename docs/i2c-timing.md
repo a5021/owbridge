@@ -160,14 +160,29 @@ count outside run-to-run noise.
 
 Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
-retry, as `Bridge.command()` already does. The demo applies the first half
-directly: `--poll-gap` (250 us at 100 kHz, 0 at 20 kHz) spaces its BUSY
-polls, and over 120 long commands at 100 kHz the retry count fell from 2 746
-back-to-back to 2 081 at 250 us and 1 599 at 500 us, at the cost of about 8%
-more search latency. `CONFIG_SET` blocks for ~23 ms and always needs the
-retry rule. The CH341A
+retry, as `Bridge.command()` already does. The demo has two host-side knobs:
+
+- `--poll-gap` (250 us at 100 kHz, 0 at 20 kHz) spaces BUSY polls. Over 120
+  long commands at 100 kHz the retry count fell from 2 746 back-to-back to
+  2 081 at 250 us and 1 599 at 500 us. Its effect on command duration is
+  small and run-dependent; at 20 kHz it is not measurable.
+- `--short-poll` reads only the status byte while BUSY and re-reads the full
+  header once the status leaves BUSY. On at 20 kHz by default, where a search
+  drops from about 1.19 s to 0.63-0.68 s with no retries; off at 100 kHz,
+  where it saves about 20% of the search time but adds roughly 13% retries.
+  `--short-poll on` enables it there as well. The protocol is unchanged: the
+  slave reloads the response pointer at every address phase, so a one-byte
+  read is just a short transaction.
+
+`CONFIG_SET` blocks for ~23 ms and always needs the retry rule. The CH341A
 `CH341StreamI2C(wlen, rlen)` combined call is the worst case because its
 STOP-to-START turnaround is only about 15 us.
+
+The slave keeps the bus marked busy after the master NACKs the last read byte,
+until the STOP (or a repeated START) actually arrives. Without that state the
+main loop could run a 1-Wire step in the NACK-to-STOP window and miss the
+STOP edge; the extra `I2C_TX_END` state closes the window without adding an
+interrupt.
 
 ## Command turnaround after STOP
 

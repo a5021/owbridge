@@ -44,7 +44,8 @@ typedef enum {
     I2C_IDLE = 0,
     I2C_ADDR,
     I2C_RX,
-    I2C_TX
+    I2C_TX,
+    I2C_TX_END /* master NACKed the last byte; bus stays busy until STOP/START */
 } i2c_state_t;
 
 static i2c_state_t state;
@@ -132,13 +133,18 @@ static inline void i2c_scl_rising(uint8_t sda)
             }
         }
         break;
+    case I2C_TX_END:
+        break;
     case I2C_TX:
         if (bit < 8u) {
             bit++;
         } else {
-            /* ACK clock: sample the master's ACK (low = ACK). */
+            /* ACK clock: sample the master's ACK (low = ACK). A NACK does
+               not free the bus yet: the STOP (or a repeated START) is still
+               to come, and the main loop must not run a 1-Wire step in that
+               window — the slave would miss the STOP edge. */
             if (sda) {
-                state = I2C_IDLE; /* NACK */
+                state = I2C_TX_END;
             } else {
                 if (tx_idx < tx_len) {
                     tx_byte = tx_ptr[tx_idx++];
@@ -201,6 +207,8 @@ static inline void i2c_scl_falling(void)
             }
             bit = 0u;
         }
+        break;
+    case I2C_TX_END:
         break;
     case I2C_TX:
         if (bit < 8u) {
