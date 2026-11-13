@@ -8,6 +8,8 @@ The tool talks to the I2C build through the same CH341A transport as
 * semantic argument checks (zero ROM, read count, resolution bits, ...);
 * truncated and padded frames, unknown command codes;
 * stale bytes left in the command buffer by a previous command;
+* transport cases: partial and over-long reads, truncated headers, zero-length
+  transactions, foreign addresses and write-address NACKs;
 * an optional fuzz run that must leave the bus and the statistics healthy.
 
 Usage:
@@ -34,6 +36,7 @@ from owbridge_demo import (
     Ch341I2C,
     BR_INVALID_CMD,
     BR_MAX_DATA,
+    BR_MAX_RESP,
     BR_CRC_ERROR,
     BR_PARAM_ERROR,
     CMD_NAMES,
@@ -515,6 +518,119 @@ def phase_fuzz(report: Report, bridge: Bridge, specs: list, ctx: dict,
                      "%d -> %d" % (before[key], after[key]))
 
 
+def _t_read(bridge, length: int, addr: int = None) -> bytes:
+    a = ((bridge.addr if addr is None else addr) << 1) | 1
+    return bridge.io._stream(bytes([a]), length)
+
+
+def _t_write(bridge, payload: bytes, addr: int = None) -> None:
+    a = ((bridge.addr if addr is None else addr) << 1) | 0
+    bridge.io._stream(bytes([a]) + bytes(payload), 0)
+
+
+def _t_frame(bridge) -> bytes:
+    """Read the latched frame raw: header first, then header+data again.
+
+    An I2C read has a fixed length decided before the address phase, so the
+    data length is learned from a first header read and the whole frame is
+    then read again. The slave reloads the response pointer at every address,
+    so the second read starts at the status byte.
+    """
+    hdr = _t_read(bridge, 3)
+    if hdr[0] == 0xFF:
+        return hdr
+    n = min(hdr[2], BR_MAX_RESP)
+    return _t_read(bridge, 3 + n) if n else hdr
+
+
+def phase_transport(report: Report, bridge: Bridge) -> None:
+    """Direct I2C-level cases that the frame-level phases do not reach."""
+    group = "transport"
+
+    def version_frame() -> bytes:
+        r = bridge.command(0x52)                   # FIRMWARE_VER, len 26
+        return bytes([0x00, 0x52, len(r.data)]) + bytes(r.data)
+
+    ref = version_frame()
+
+    # 1. A read with no preceding write returns the latched frame.
+    got = _t_frame(bridge)
+    report.check(group, "read without a write returns the latched frame",
+                 got == ref, got[:4].hex(" "))
+
+    # 2. Truncated header, then the full frame: the pointer resets.
+    first = _t_read(bridge, 1)
+    got = _t_frame(bridge)
+    report.check(group, "one-byte header read then full frame agree",
+                 first == ref[:1] and got == ref,
+                 "%s / %s" % (first.hex(" "), got[:4].hex(" ")))
+
+    # 3. Reading past the frame: the tail is released (0xFF).
+    over = _t_read(bridge, len(ref) + 8)
+    report.check(group, "bytes past the frame read as FF",
+                 over[:len(ref)] == ref and over[len(ref):] == b"\xFF" * 8,
+                 over[-8:].hex(" "))
+
+    # 4. Abort a read after two bytes, then read the frame again.
+    partial = _t_read(bridge, 2)
+    got = _t_frame(bridge)
+    report.check(group, "aborted read does not disturb the next read",
+                 partial == ref[:2] and got == ref,
+                 "%s / %s" % (partial.hex(" "), got[:4].hex(" ")))
+
+    # 5. A read address with no clocks is host misuse; the next command must
+    #    recover the bus (the slave drives the first data bit on the ACK edge).
+    _t_read(bridge, 0)
+    recovered = bridge.command(0x52)
+    report.check(group, "zero-clock read address recovers on the next command",
+                 recovered.status == 0 and recovered.data == ref[3:],
+                 recovered.status_name)
+
+    # 6. Zero-length write: address + STOP, no data byte.
+    ref = version_frame()
+    _t_write(bridge, b"")
+    got = _t_frame(bridge)
+    report.check(group, "zero-length write is ignored", got == ref,
+                 got[:4].hex(" "))
+
+    # 7. One-byte write is not a frame: no response is latched.
+    _t_write(bridge, bytes([0x52]))
+    got = _t_frame(bridge)
+    report.check(group, "one-byte write does not latch a response", got == ref,
+                 got[:4].hex(" "))
+
+    # 8. Declared length without its data is rejected, not merged into the next.
+    _t_write(bridge, bytes([0x52, 0x05]))
+    rej = _t_frame(bridge)
+    report.check(group, "truncated declared length is PARAM_ERROR",
+                 rej[:3] == bytes([BR_PARAM_ERROR, 0x52, 0x00]), rej[:4].hex(" "))
+
+    # 9. A length past the command maximum is rejected before the bus is touched.
+    _t_write(bridge, bytes([0x04, 40]) + b"\xFF" * 40)
+    rej = _t_frame(bridge)
+    report.check(group, "declared 40 beyond the command maximum is PARAM_ERROR",
+                 rej[:3] == bytes([BR_PARAM_ERROR, 0x04, 0x00]), rej[:4].hex(" "))
+    ok = bridge.command(0x04, b"\xFF" * 32, timeout=10.0)
+    report.check(group, "maximum valid frame still executes", ok.status == 0,
+                 ok.status_name)
+
+    # 10. A foreign address is NACKed and does not disturb ours.
+    ref = version_frame()
+    foreign = _t_read(bridge, 3, addr=(bridge.addr + 1) & 0x7F)
+    got = _t_frame(bridge)
+    report.check(group, "foreign address NACK leaves our frame intact",
+                 foreign == b"\xFF\xFF\xFF" and got == ref,
+                 "%s / %s" % (foreign.hex(" "), got[:4].hex(" ")))
+
+    # 11. One-byte read (master NACK, I2C_TX_END) then a full read.
+    one = _t_read(bridge, 1)
+    got = _t_frame(bridge)
+    report.check(group, "read end after a one-byte read resets cleanly",
+                 one == ref[:1] and got == ref,
+                 "%s / %s" % (one.hex(" "), got[:4].hex(" ")))
+
+    version_frame()
+
 def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
     try:
         version = bridge.firmware_ver()
@@ -664,6 +780,7 @@ def main(argv=None) -> int:
             phase_arguments(report, bridge, ctx)
             phase_structure(report, bridge, ctx)
             phase_stale(report, bridge, ctx)
+            phase_transport(report, bridge)
             phase_integrity(report, bridge, ctx)
             if args.fuzz > 0:
                 phase_fuzz(report, bridge, specs, ctx, args.fuzz, args.seed)
