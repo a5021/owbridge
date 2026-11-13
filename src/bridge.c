@@ -1241,7 +1241,7 @@ static void start_firmware_ver(const br_command_t *cmd)
 static uint8_t poll_firmware_ver(br_response_t *resp)
 {
     static const uint8_t ver[] __attribute__((aligned(4))) =
-        "owbridge 1.0.0 (lib 3.1.2)";
+        "owbridge 1.0.0 (lib 3.1.3)";
     resp->status = BR_OK;
     resp->cmd = BR_CMD_FIRMWARE_VER;
     resp->len = (uint8_t)sizeof(ver) - 1u;

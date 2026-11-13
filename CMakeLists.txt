@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Dependencies are fetched from GitHub at configure time:
-#   - a5021/stm32-async-1wire, tag v3.1.2
+#   - a5021/stm32-async-1wire, tag v3.1.3
 #   - ARM-software/CMSIS_5 (Core headers, pinned SHA)
 #   - STMicroelectronics/cmsis_device_f0 (device headers, pinned SHA)
 #
@@ -39,7 +39,7 @@ set(OW_MCU "STM32F030x6" CACHE STRING "ST device macro")
 set(OW_SYSCLK_MHZ "48" CACHE STRING "System clock in MHz")
 set(OW_MAX_DEVICES "16" CACHE STRING "DS18B20 device table size")
 set(OW_PARASITE ON CACHE BOOL "Parasite-powered 1-Wire bus")
-set(OW_LIBRARY_TAG "v3.1.2" CACHE STRING "stm32-async-1wire git tag")
+set(OW_LIBRARY_TAG "v3.1.3" CACHE STRING "stm32-async-1wire git tag")
 set(OW_OPT "-O2" CACHE STRING "Optimisation flag for the firmware and the library")
 option(OWBRIDGE_PROFILE "Enable the one-off I2C polling profiler (TIM3, SWD-readable)" OFF)
 

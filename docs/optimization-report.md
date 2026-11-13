@@ -9,7 +9,7 @@ one DS2431). Nothing here is an estimate unless it says so.
 ## TL;DR
 
 - Retries at 100 kHz over 120 long commands fell from **3 827 to about
-  2 300** (-40%) with **zero failed commands**; the address-NACK rate in a
+  2 400** (-37%) with **zero failed commands**; the address-NACK rate in a
   logic-analyzer capture fell from **4.2% to 1.9%**. At 20 kHz it stays at
   zero.
 - The wins are the library's table-driven CRC-8/CRC-16, encoder and packed
@@ -91,12 +91,13 @@ Effect on the bench:
 | read-all poll | 45 us | 25 us |
 | EEPROM poll | 89 us | 50 us |
 | 32-byte write submit | 93 us | 30 us |
-| retries at 100 kHz | 3 827 | 2 500-2 800 |
+| retries at 100 kHz | 3 827 | 2 377-2 421 (two runs) |
 
-PR status: <https://github.com/a5021/stm32-async-1wire/pull/121>. All checks
-pass except `cmake (h7)`, which fails in the dependency download (the pinned
-`cmsis_device_h7` tree is not readable from the runner; a local shallow fetch
-of the same pin works). That failure is independent of the diff.
+PR [#121](https://github.com/a5021/stm32-async-1wire/pull/121) merged as
+`5ba584e5`; the last red leg (`cmake (h7)`) was the shallow CMSIS device
+clone, fixed in the same PR by fetching that package without `--depth 1`.
+Released as v3.1.3. The whole-image numbers above are from the library's own
+budget targets; the bridge image delta is in the next sections.
 
 ## Firmware
 
@@ -175,6 +176,33 @@ hooks compile to nothing in production. They were what showed that the
 | Replace the search leaf `memcmp`/`memcpy` with byte loops | about 36 us per search (0.01%); GCC may turn the copy back into `memcpy` | not a hot path |
 | Skip `strong_pullup(0)`/`set_pin_mode(0)` when already open-drain | about 0.1 us per command | the library calls it internally; not safely trackable |
 | EXTI/interrupt-driven slave | would remove the sampling margin | excluded by the firmware's interrupt-free requirement |
+
+## Dependency update: library v3.1.3
+
+The library changes from PR #121 shipped as **v3.1.3** (tag `v3.1.3`, release
+commit `a771e28c`). `OW_LIBRARY_TAG` and the firmware version string now point
+at the tag, and all three host variants were rebuilt from a clean configure so
+`build/_deps/` fetched the release instead of using a source checkout.
+
+Controlled A/B on the I2C image with the same firmware source:
+
+| Library | text | bss + data |
+|---------|------|------------|
+| v3.1.2 | 21 836 B | 2 052 B |
+| v3.1.3 | 21 212 B | 2 052 B |
+
+The table-driven CRC-8, CRC-16 and codec remove 624 B net: the 112 B of tables
+are smaller than the loops they replace in the functions this image links.
+
+Current sizes (text / bss + data): UART 24 588 / 2 420, SPI 21 132 / 2 200,
+I2C 21 212 / 2 052.
+
+On the bench, after flashing the v3.1.3 build: `selftest` and `info` pass, the
+protocol suite passes 178/0/10 with `--fuzz 2000 --destructive` at 100 kHz and
+at 20 kHz, and the 120-command retry probe measured 2 377 and 2 421 retries at
+100 kHz in two runs and 0-1 at 20 kHz. The earlier pass measured 2 500-2 800
+on the same probe; the difference is within the run-to-run variation of the
+probe, so the 3.1.3 bump does not change the host contract.
 
 ## Where the time still goes
 

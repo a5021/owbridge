@@ -1,8 +1,8 @@
 # Notes on `stm32-async-1wire` from an integration effort
 
-Library version: **v3.1.2** (commit `248d2662`).
+Library version: **v3.1.3** (commit `a771e28c`).
 Target MCU: **STM32F030F4P6**, TSSOP-20, 16 KB flash (documented) / 4 KB RAM.
-Date: 2026-11-10.
+First written against v3.1.2 on 2026-11-10; re-checked against v3.1.3.
 
 The observations below were collected while building an
 `I2C/UART/SPI <-> 1-Wire` bridge on this part. Each item follows the same

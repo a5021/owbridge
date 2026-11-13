@@ -181,7 +181,7 @@ static void push_at_response(void)
         tx_puts("OK\r\n");
         break;
     case AT_VER:
-        tx_puts("owbridge 1.0.0 (lib 3.1.2)\r\n");
+        tx_puts("owbridge 1.0.0 (lib 3.1.3)\r\n");
         break;
     case AT_OWRST:
         tx_puts("OK\r\n");
@@ -277,7 +277,7 @@ static void at_submit(uint8_t cmd)
     }
     if (cmd == AT_VER) {
         tx_pos = 0u;
-        tx_puts("owbridge 1.0.0 (lib 3.1.2)\r\n");
+        tx_puts("owbridge 1.0.0 (lib 3.1.3)\r\n");
         uart_tx_start(tx_pos);
         return;
     }
