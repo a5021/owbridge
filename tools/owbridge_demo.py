@@ -32,12 +32,15 @@ While a long command is BUSY the firmware runs 1-Wire state-machine steps of
 up to a few tens of microseconds. A START that lands inside one is lost (the
 slave only samples SCL between steps), and the loss probability is roughly
 step_time / gap, so ``--poll-gap`` spaces the BUSY polls and buys fewer
-retries. The default depends on the bus rate: 250 us at 100 kHz (2 746
-retries back-to-back, 2 081 at 250 us, 1 599 at 500 us over 120 long
-commands, at the cost of about 8% more search latency) and 0 at 20 kHz,
-where there are no retries and the gap only slows long commands down (a
-search took 0.70 s at 250 us versus 1.09 s back-to-back, because every host
-transaction suspends the 1-Wire state machine). See docs/i2c-timing.md.
+retries: 250 us at 100 kHz (2 746 retries back-to-back, 2 081 at 250 us,
+1 599 at 500 us over 120 long commands) and 0 at 20 kHz, where there are no
+retries to buy and the gap has no measurable effect on duration.
+
+``--short-poll`` reads only the status byte while BUSY and re-reads the full
+header once the status leaves BUSY, which roughly halves the transaction
+while a long command runs. It is on at 20 kHz by default (a search drops from
+about 1.19 s to 0.63-0.68 s with no retries) and off at 100 kHz, where it
+saves about 20% of the search time but adds retries. See docs/i2c-timing.md.
 
 Protocol note
 -------------
@@ -437,10 +440,14 @@ class Bridge:
     """Command level access to the bridge, one method per command."""
 
     def __init__(self, io: Ch341I2C, addr: int = DEFAULT_ADDR, trace=None,
-                 poll_gap: float = 0.0):
+                 poll_gap: float = 0.0, short_poll: bool = False):
         self.io = io
         self.addr = addr
         self.trace = trace
+        # While BUSY, poll the one status byte instead of the three-byte
+        # header. The full header is read again once the status leaves BUSY,
+        # so instant commands and frame validation are unchanged.
+        self.short_poll = short_poll
         # Pause between consecutive BUSY polls, in seconds. A START that
         # lands inside the firmware's next bridge_poll() step is lost (see
         # docs/i2c-timing.md), and the loss probability is roughly
@@ -486,13 +493,36 @@ class Bridge:
         polls = 0
         nacks = 0
         sends = 1
+        seen_echo = False
+        short = False
         first_poll = True
         while True:
             if not first_poll:
                 self._pace()
             first_poll = False
-            hdr = self._rx(3)
-            polls += 1
+            if short:
+                st = self._rx(1)[0]
+                polls += 1
+                if st == 0xFF:
+                    nacks += 1
+                    if time.monotonic() >= deadline:
+                        raise BridgeTimeout(
+                            "no ACK from 0x%02X after %d polls (%d NACKs); check the "
+                            "address and that the firmware is running" % (self.addr, polls, nacks)
+                        )
+                    continue
+                if st == BR_BUSY:
+                    if time.monotonic() >= deadline:
+                        raise BridgeTimeout(
+                            "%s stayed BUSY for %.2f s (%d polls)"
+                            % (CMD_NAMES.get(cmd, "0x%02X" % cmd), timeout, polls)
+                        )
+                    continue
+                hdr = self._rx(3)
+                polls += 1
+            else:
+                hdr = self._rx(3)
+                polls += 1
             if hdr[0] == 0xFF and hdr[1] == 0xFF:
                 # No ACK: the slave has not seen (or has not finished) the
                 # previous transaction yet. Keep polling until the deadline.
@@ -504,11 +534,21 @@ class Bridge:
                     )
                 continue
             if hdr[1] != cmd:
-                # A response for another command: the write was NACKed and
-                # never reached the bridge, so the latched frame is stale.
-                # A command that was accepted always echoes its own code,
-                # including while it is BUSY or when the queue is full.
+                # A response for another command. Before our own echo has been
+                # seen, the write was NACKed and never reached the bridge, so
+                # the latched frame is stale and the frame is re-sent. After
+                # the echo was seen, the write was accepted; a mismatch can
+                # only be the response buffer moving on (a queued command), so
+                # poll again rather than re-running a long command.
                 nacks += 1
+                if seen_echo:
+                    if time.monotonic() >= deadline:
+                        raise BridgeError(
+                            "response for %s replaced by %s before it was read"
+                            % (CMD_NAMES.get(cmd, "0x%02X" % cmd),
+                               CMD_NAMES.get(hdr[1], "0x%02X" % hdr[1]))
+                        )
+                    continue
                 if sends >= 3 or time.monotonic() >= deadline:
                     raise BridgeError(
                         "expected a response for %s, got %s; the command write "
@@ -521,12 +561,14 @@ class Bridge:
                 sends += 1
                 continue
 
+            seen_echo = True
             if hdr[0] == BR_BUSY:
                 if time.monotonic() >= deadline:
                     raise BridgeTimeout(
                         "%s stayed BUSY for %.2f s (%d polls)"
                         % (CMD_NAMES.get(cmd, "0x%02X" % cmd), timeout, polls)
                     )
+                short = self.short_poll
                 continue
 
             length = min(hdr[2], BR_MAX_RESP)
@@ -1511,6 +1553,8 @@ def add_common(parser, suppress: bool):
     parser.add_argument("--poll-gap", type=float, default=None,
                         help="pause between BUSY polls, microseconds "
                              "(default: 250 at 100k, 0 at 20k)")
+    parser.add_argument("--short-poll", choices=("auto", "on", "off"), default="auto",
+                        help="poll one status byte while BUSY (default: on at 20k, off at 100k)")
     parser.add_argument("--json", action="store_true", default=default(False), help="machine-readable output")
     parser.add_argument("--verbose", action="store_true", default=default(False), help="print every I2C frame")
     parser.add_argument("--no-color", action="store_true", default=default(False), help="disable ANSI colours")
@@ -1592,7 +1636,10 @@ def main(argv=None) -> int:
                 # search latency; at 20 kHz there are no retries to buy and
                 # the gap only slows long commands down.
                 gap_us = 250.0 if args.speed == "100k" else 0.0
-            bridge = Bridge(io, addr=addr, trace=trace, poll_gap=gap_us / 1e6)
+            short_poll = (args.short_poll == "on") or (
+                args.short_poll == "auto" and args.speed == "20k")
+            bridge = Bridge(io, addr=addr, trace=trace, poll_gap=gap_us / 1e6,
+                            short_poll=short_poll)
             if not args.json:
                 print(out.c.bold("owbridge demo") + out.c.dim("  addr 0x%02X  %s  %s"
                                                                % (addr, args.speed, args.dll)))

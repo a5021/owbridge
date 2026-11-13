@@ -63,14 +63,15 @@ transaction. Two adapter quirks shape the transport:
   above absorb them. A host that needs every frame accepted on the first try
   must leave at least 100 us after STOP (250 us is comfortable), or use UART,
   whose frames carry a CRC-8. `CONFIG_SET` blocks for ~23 ms and always needs
-  the retry rule. The demo also spaces its BUSY polls by `--poll-gap`
-  microseconds: the loss probability is roughly step_time / gap, so a longer
-  gap buys fewer retries. The default is 250 us at 100 kHz and 0 at 20 kHz.
-  Measured over 120 long commands at 100 kHz: 2 746 retries back-to-back,
-  2 081 at 250 us and 1 599 at 500 us, for about 8% more search latency. At
-  20 kHz there are no retries to buy and the gap only slows long commands
-  down: a search took 0.70 s at 250 us versus 1.09 s back-to-back, because
-  every host transaction suspends the 1-Wire state machine.
+  the retry rule. The demo has two host-side knobs. `--poll-gap` (250 us at
+  100 kHz, 0 at 20 kHz) spaces BUSY polls: the loss probability is roughly
+  step_time / gap, and over 120 long commands at 100 kHz the retry count fell
+  from 2 746 back-to-back to 2 081 at 250 us and 1 599 at 500 us. Its effect
+  on command duration is small and run-dependent. `--short-poll` reads one
+  status byte while BUSY and re-reads the header when the status leaves BUSY:
+  on at 20 kHz by default, where a search drops from about 1.19 s to
+  0.63-0.68 s with no retries; off at 100 kHz, where it saves about 20% of
+  the search time but adds retries; `--short-poll on` enables it there.
 
 The I2C frame has no checksum; see the transport integrity table in the
 README. Commands with self-checking payloads (ROM CRC-8, DS2431 CRC-16,

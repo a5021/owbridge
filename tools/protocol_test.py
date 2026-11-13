@@ -608,6 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Boundary and fuzz tests for per-command payload validation.")
     parser.add_argument("--addr", default="0x30", help="I2C slave address (default 0x30)")
+    parser.add_argument("--short-poll", choices=("auto", "on", "off"), default="auto",
+                        help="poll one status byte while BUSY (default: on at 20k, off at 100k)")
     parser.add_argument("--speed", default="100k", choices=demo.SPEED_CHOICES,
                         help="CH341A I2C clock (default 100k)")
     parser.add_argument("--dll", default=DEFAULT_DLL, help="path to CH341DLLA64.DLL")
@@ -644,7 +646,9 @@ def main(argv=None) -> int:
     report = Report()
     try:
         with Ch341I2C(args.dll, speed=SPEEDS[args.speed]) as io:
-            bridge = Bridge(io, addr=addr, trace=trace)
+            short_poll = (args.short_poll == "on") or (
+                args.short_poll == "auto" and args.speed == "20k")
+            bridge = Bridge(io, addr=addr, trace=trace, short_poll=short_poll)
             if not args.json:
                 print("owbridge protocol test  addr 0x%02X  %s  fuzz=%d"
                       % (addr, args.speed, args.fuzz))
