@@ -15,6 +15,10 @@ and SDA often enough for a reliable 100 kHz bus?
   `bridge_submit()`, the time spent in `config_set()`, and how often the I2C
   bus went from idle to busy across one poll (a START that arrived while the
   firmware was inside `bridge_poll()`).
+- The active-path numbers below come from a real host workload (searches,
+  read-alls, 32-byte writes, EEPROM and config writes) at 20 kHz; the
+  instrumented loop is too slow for 100 kHz. CPU cost is independent of SCL
+  rate.
 - After one second the firmware runs a one-off command experiment (reset,
   search, broadcast convert, read-all) and stores the wall-clock durations.
 - The values are read from RAM over SWD; nothing is printed. No I2C master and
@@ -50,7 +54,8 @@ time.
 
 - At 100 kHz the SCL half-period is 5 us. The production loop without the
   profiler is about 2-3 us, so the slave samples each half-period at least
-  once.
+  once. The CH341A actually clocks at about 115 kHz (4.3 us), so the margin
+  is small but real; adding a few microseconds to the busy loop breaks it.
 - While an I2C transaction is active, `bridge_poll()` is skipped, so the busy
   loop is shorter than the figures above. The safety valve releases the poll
   only after 50 ms with no SCL/SDA edge, so it fires on a wedged bus, never in
@@ -65,40 +70,54 @@ The `bridge_poll()` numbers above are the **idle** case: the poll returns in
 command is in flight.
 
 The I2C main loop deliberately skips `bridge_poll()` between START and STOP,
-so a command advances only after STOP. The first poll after STOP executes one
-library poll step, which can cover more than one work event. The library's CPU
-profile (`stm32-async-1wire` v3.1.2, `docs/cpu-profile.md`, F030 at 8 MHz)
-gives two bounds:
+so a command advances only after STOP. The first poll after STOP, or the STOP
+handler itself (`bridge_submit()`), can therefore block the sampler. Measured
+on the 9-device bench with the extended profiler, final firmware at `-O2`:
 
-| Metric | Cycles | Time at 48 MHz | Time with flash wait states |
-|--------|--------|----------------|-----------------------------|
-| worst driver work event (measurement) | 2 857 | 59.5 us | ~65-85 us |
-| worst public poll, measurement phase | 7 217 | 150 us | ~160-210 us |
-| worst driver work event (search) | 1 117 | 23.3 us | ~25-35 us |
-| worst public poll, search phase | 3 356 | 70 us | ~70-100 us |
+| Path | Min | Max |
+|------|-----|-----|
+| idle `bridge_poll()` | 1 us | 3 us |
+| `bridge_poll()` during `OW_SEARCH` / `TEMP_READ_ALL` | 1 us | 45 us |
+| `bridge_poll()` during `EEPROM_WRITE` (DS2431 read-back) | - | 89 us |
+| `bridge_submit()` inside STOP, `OW_WRITE_BYTES` 32 B | - | 93 us |
+| `bridge_submit()` other long commands | 15 us | 19 us |
+| `config_set()` inside `bridge_poll()` (`CONFIG_SET`) | - | 23.3 ms |
 
-The public-poll maxima include the CPU-profile example's completion callback
-(UART formatting); the bridge's callback is lighter, so the real firmware
-should sit between the two rows. The conservative host bound is therefore the
-public-poll row: **allow >= 250 us after STOP** until the profiler replaces it
-with a measurement. The extended profiler reports the actual value in
-`prof_bridge_max`, `prof_bridge_last` and `prof_bridge_hist[8]`;
-`prof_start_missed` counts transactions whose START arrived during that window.
-Bench results will replace these estimates when the ST-LINK is available again.
+Method note: the profiled build itself cannot keep up with 100 kHz once the
+extended counters are compiled in, so the host traffic ran at 20 kHz. The CPU
+cost above is independent of the SCL rate; only the number of polls per command
+changes.
 
-Consequence for the host: while a long command is `BUSY`, a START that arrives
-less than one worst-case poll after STOP can be missed. At 100 kHz a byte takes
-90 us, so losing the first START loses the address phase; the bridge NACKs the
-read address (I2C) and the host sees `0xFF`. This is the most likely explanation
-for the NACK counts on `TEMP_READ_ALL` and `OW_SEARCH` in the torture test; the
-earlier "adapter-only" explanation was not demonstrated. The profiler's
-`prof_start_missed` counter settles it on the bench.
+The library CPU profile's public-poll figures (7 217 cycles for a measurement
+phase, 3 356 for search) include that example's UART completion callback. The
+bridge callback is lighter, which is why the measured maximum is 45 us rather
+than the 150 us extrapolated from the library figure.
 
-Host rule for long operations: either space transactions by more than the
-worst-case poll (measured value pending; use >= 250 us conservatively), or
-treat a NACK / all-`FF` read as "not ready" and retry, as `Bridge.command()`
-already does. The CH341A `CH341StreamI2C(wlen, rlen)` combined call is the
-worst case because its STOP-to-START turnaround is only about 15 us.
+## Host consequence: missed STARTs
+
+While a long command is `BUSY`, a START that arrives during one of those
+windows is missed. At 100 kHz a byte takes 90 us, so losing the first START
+loses the address phase; the bridge NACKs the read address and the host sees
+`0xFF`. A focused probe (30 searches, 40 `TEMP_READ_ALL`, 40 32-byte writes,
+10 EEPROM writes) measured:
+
+| Speed | Commands | Retries (NACK / all-`FF`) | Failed commands |
+|-------|----------|---------------------------|-----------------|
+| 20 kHz | 120 | 0 | 0 |
+| 100 kHz | 120 | 3 827 | 0 |
+
+At 20 kHz the adapter's transaction turnaround is longer than the blocking
+window, so nothing is missed. At 100 kHz the ~15 us turnaround is much shorter
+than a 45-93 us poll, so retries are expected. This is the most likely
+explanation for the NACK counts in the torture test; the earlier
+"adapter-only" explanation was not demonstrated.
+
+Host rule for long operations: either leave at least **100 us** after STOP
+(250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
+retry, as `Bridge.command()` already does. `CONFIG_SET` blocks for ~23 ms and
+always needs the retry rule. The CH341A `CH341StreamI2C(wlen, rlen)` combined
+call is the worst case because its STOP-to-START turnaround is only about
+15 us.
 
 ## Command turnaround after STOP
 

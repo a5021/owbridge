@@ -57,10 +57,12 @@ transaction. Two adapter quirks shape the transport:
   lost; the demo re-sends it (up to three times) instead of returning a stale
   frame.
 * While a long command is `BUSY`, a transaction chained a few microseconds
-  after STOP can be missed: the firmware is completing one library poll step.
-  The demo's retry rules above absorb this. A host that needs every frame
-  accepted on the first try must leave a gap after STOP (measured bound
-  pending; >= 250 us is safe), or use UART, whose frames carry a CRC-8.
+  after STOP can be missed: the firmware is completing a poll step or building
+  the next command (45-93 us on this bench). The demo's retry rules above
+  absorb this. A host that needs every frame accepted on the first try must
+  leave at least 100 us after STOP (250 us is comfortable), or use UART,
+  whose frames carry a CRC-8. `CONFIG_SET` blocks for ~23 ms and always needs
+  the retry rule.
 
 The I2C frame has no checksum; see the transport integrity table in the
 README. Commands with self-checking payloads (ROM CRC-8, DS2431 CRC-16,

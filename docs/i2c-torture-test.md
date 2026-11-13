@@ -128,12 +128,13 @@ The pure I2C bulk path and all instant queries had no NACKs at all.
 
 The NACKs on long commands have a firmware-side mechanism, not just an adapter
 quirk: while a command is `BUSY`, the main loop skips `bridge_poll()` between
-START and STOP, then runs one library event after STOP. That event can take
-tens of microseconds (see `docs/i2c-timing.md`), so a START chained ~15 us
-after STOP is missed and the read address is NACKed. The harness retries, so
-the command still completes. The earlier explanation that the adapter alone
-caused these NACKs was not proven; the profiler now counts the exact event
-(`prof_start_missed`, `prof_bridge_max`).
+START and STOP, then runs one library step after STOP (or builds the next
+command's slots inside the STOP handler). Those windows are 45-93 us on this
+bench (see `docs/i2c-timing.md`), so a START chained ~15 us after STOP is
+missed and the read address is NACKed. A focused rerun on the final firmware
+measured 3 827 retries over 120 long commands at 100 kHz and **0** at 20 kHz;
+every command still completed. The earlier explanation that the adapter alone
+caused these NACKs was not proven.
 
 ## Host write losses
 

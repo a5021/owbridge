@@ -122,39 +122,50 @@ build at `-O2`:
 These numbers include the profiler's two TIM3 reads and volatile bookkeeping
 (about 1.5-2 us per iteration); the production loop is therefore about 2-3 us.
 While an I2C transaction is active `bridge_poll()` is skipped, so the busy
-loop is shorter still. The SCL half-period at 100 kHz is 5 us, so 100 kHz has
-margin; 400 kHz (1.25 us) does not.
+loop is shorter still. The SCL half-period is 5 us at 100 kHz, but the CH341A
+actually produces about 115 kHz (4.3 us), so the margin is small; 400 kHz
+(1.25 us) does not work.
 
 **The 1-2 us `bridge_poll()` figure is the idle case.** While a long command
-is running, the first `bridge_poll()` after STOP executes one library event,
-which is much heavier. The library's CPU profile (`stm32-async-1wire` v3.1.2,
-F030 at 8 MHz) reports a worst driver work event of 2 857 cycles (59.5 us at
-48 MHz) and a worst public poll of 7 217 cycles (150 us at 48 MHz). The latter
-includes the example's completion callback; this firmware's callback is much
-lighter, but until the extended profiler is read on the bench the honest design
-bound is the public-poll figure plus flash wait states: **roughly 160-210 us**
-for the measurement path and **70-100 us** for search. During that window the
-slave is not sampling SCL, so a START/clock burst that arrives earlier can be
-missed. This is the mechanism behind the NACKs on `TEMP_READ_ALL` and
-`OW_SEARCH` in the torture test, not necessarily an adapter defect.
+is running, the first `bridge_poll()` after STOP (or the STOP handler itself,
+for `OW_WRITE_BYTES`) can block the polled I2C sampler. Measured with the
+extended profiler on the 9-device bench, final I2C build at `-O2`, host
+traffic at 20 kHz (the instrumented loop is too slow for 100 kHz; the CPU cost
+is independent of SCL rate):
 
-Host contract while a long command is `BUSY`: either leave at least **250 us**
-after STOP before the next START (a conservative value covering the bound
-above; the profiler will replace it with the measured worst case), or keep the
-current behaviour and treat a NACK or an all-`FF` read as "not ready", then
-retry. The demo and the torture harness do the latter. Instant commands are
-unaffected: they finish inside the STOP handler.
+| Blocking path | Measured max |
+|---------------|--------------|
+| idle `bridge_poll()` | 3 us |
+| `bridge_poll()` during `OW_SEARCH` / `TEMP_READ_ALL` | 45 us |
+| `bridge_poll()` during `EEPROM_WRITE` (DS2431 read-back) | 89 us |
+| `bridge_submit()` inside STOP, `OW_WRITE_BYTES` 32 B | 93 us |
+| `bridge_submit()` other long commands | 15-19 us |
+| `config_set()` inside `bridge_poll()` (`CONFIG_SET`) | 23.3 ms |
+
+During those windows the slave does not sample SCL, so a START/clock burst
+that arrives earlier is missed. This is the mechanism behind the NACKs on
+`TEMP_READ_ALL`, `OW_SEARCH` and the write commands, not an adapter defect.
+A focused probe on the same bench (30 searches, 40 read-alls, 40 32-byte
+writes and 10 EEPROM writes) saw **3 827 retries at 100 kHz and 0 at 20 kHz**;
+every command still completed with `OK`.
+
+Host contract while a long command is `BUSY`: leave at least **100 us** after
+STOP before the next START, or treat a NACK / all-`FF` read as "not ready" and
+retry. The demo and the torture harness do the latter; 250 us is a comfortable
+gap for hosts that prefer not to retry. `CONFIG_SET` is different: it blocks
+for about 23 ms, so the host must retry across it (the demo's 10 s timeout
+covers this). Instant commands are unaffected: they finish inside the STOP
+handler, in about 10 us.
+
+The per-loop edge bookkeeping for the 50 ms valve is gated to one check per
+millisecond. An earlier version that read the edge counter on every busy-loop
+iteration was itself enough to break 100 kHz on the production build; the
+measured margin is that thin.
 
 The 50 ms safety valve now requires **no SCL/SDA edges for 50 ms**, not merely
 a transaction longer than 50 ms. A 163-byte frame at 20 kHz lasts about 74 ms
 but keeps clocking, so it is never interrupted; the valve only releases a
 wedged or held bus. 100 kHz remains the validated rate.
-
-`CONFIG_SET` is the one command that blocks the sampler by design: page erase
-and programming run inside a single `bridge_poll()` and take tens of
-milliseconds. The host must therefore retry (`NACK` / `FF FF`) across it; the
-demo's 10 s timeout covers this. The profiler records the actual duration in
-`prof_config_set_us`.
 
 ### I2C host turnaround
 
@@ -163,10 +174,10 @@ STOP-to-START turnaround for instant commands: version, cached queries,
 config and stats are completed inside `bridge_submit()` before the handler
 returns, so the read that follows immediately sees the final response. Long
 1-Wire commands start their engine at STOP and latch `BUSY`; the first
-main-loop poll after STOP completes one step and can outlast the 15 us
-turnaround, so a chained read address may be NACKed and must be retried (see
-the timing margin above). Once the host is polling, the response arrives as
-usual.
+main-loop poll after STOP (up to 45-89 us) or the STOP handler itself (up to
+93 us for `OW_WRITE_BYTES`) can outlast the 15 us turnaround, so a chained
+read address may be NACKed and must be retried (see the timing margin above).
+Once the host is polling, the response arrives as usual.
 
 Measured worst case for an instant command on the 9-device bench: about 10 us
 from STOP detection to the latched response. No host-side gap is required:
@@ -403,7 +414,7 @@ override it at runtime with `OW_SET_POWER`.
 |---------|---------------|------------------|
 | UART | 25 152 B | 2 416 B |
 | SPI | 21 732 B | 2 196 B |
-| I2C | 21 856 B | 2 048 B |
+| I2C | 21 872 B | 2 048 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack; about 1.6-2.0 KB remains below the 4 KB limit. The linker script
