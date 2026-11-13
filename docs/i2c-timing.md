@@ -162,10 +162,11 @@ Host rule for long operations: either leave at least **100 us** after STOP
 (250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
 retry, as `Bridge.command()` already does. The demo has two host-side knobs:
 
-- `--poll-gap` (250 us at 100 kHz, 0 at 20 kHz) spaces BUSY polls. Over 120
-  long commands at 100 kHz the retry count fell from 2 746 back-to-back to
-  2 081 at 250 us and 1 599 at 500 us. Its effect on command duration is
-  small and run-dependent; at 20 kHz it is not measurable.
+- `--poll-gap` spaces BUSY polls (default 0). Before the packed sampler it
+  cut the retry count from 2 746 to 2 081 over 120 long commands at 100 kHz;
+  with the sampler at about 2 286 back-to-back, 250 us measures 2 205 (inside
+  the run-to-run spread) and costs about 7% of the search time, so the
+  default is back-to-back.
 - `--short-poll` reads only the status byte while BUSY and re-reads the full
   header once the status leaves BUSY. On at 20 kHz by default, where a search
   drops from about 1.19 s to 0.63-0.68 s with no retries; off at 100 kHz,

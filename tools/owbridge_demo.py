@@ -31,10 +31,11 @@ Poll pacing
 While a long command is BUSY the firmware runs 1-Wire state-machine steps of
 up to a few tens of microseconds. A START that lands inside one is lost (the
 slave only samples SCL between steps), and the loss probability is roughly
-step_time / gap, so ``--poll-gap`` spaces the BUSY polls and buys fewer
-retries: 250 us at 100 kHz (2 746 retries back-to-back, 2 081 at 250 us,
-1 599 at 500 us over 120 long commands) and 0 at 20 kHz, where there are no
-retries to buy and the gap has no measurable effect on duration.
+step_time / gap. With the packed sampler and the short BUSY poll the gap no
+longer measurably reduces retries (about 2 286 back-to-back versus 2 205 at
+250 us over 120 long commands at 100 kHz), and it costs about 7% of the
+search time, so the default is back-to-back; ``--poll-gap`` remains for hosts
+that prefer it.
 
 ``--short-poll`` reads only the status byte while BUSY and re-reads the full
 header once the status leaves BUSY, which roughly halves the transaction
@@ -1551,8 +1552,7 @@ def add_common(parser, suppress: bool):
     parser.add_argument("--dll", default=default(DEFAULT_DLL), help="path to CH341DLLA64.DLL")
     parser.add_argument("--timeout", type=float, default=default(3.0), help="command BUSY timeout in seconds")
     parser.add_argument("--poll-gap", type=float, default=None,
-                        help="pause between BUSY polls, microseconds "
-                             "(default: 250 at 100k, 0 at 20k)")
+                        help="pause between BUSY polls, microseconds (default 0)")
     parser.add_argument("--short-poll", choices=("auto", "on", "off"), default="auto",
                         help="poll one status byte while BUSY (default: on at 20k, off at 100k)")
     parser.add_argument("--json", action="store_true", default=default(False), help="machine-readable output")
@@ -1632,10 +1632,10 @@ def main(argv=None) -> int:
         with Ch341I2C(args.dll, speed=SPEEDS[args.speed]) as io:
             gap_us = args.poll_gap
             if gap_us is None:
-                # At 100 kHz the gap buys ~25% fewer retries for ~8% more
-                # search latency; at 20 kHz there are no retries to buy and
-                # the gap only slows long commands down.
-                gap_us = 250.0 if args.speed == "100k" else 0.0
+                # Back-to-back by default: with the packed sampler and the
+                # short BUSY poll the gap no longer measurably reduces
+                # retries, and it costs about 7% of the search time.
+                gap_us = 0.0
             short_poll = (args.short_poll == "on") or (
                 args.short_poll == "auto" and args.speed == "20k")
             bridge = Bridge(io, addr=addr, trace=trace, poll_gap=gap_us / 1e6,
