@@ -34,6 +34,7 @@ from owbridge_demo import (
     Ch341I2C,
     BR_INVALID_CMD,
     BR_MAX_DATA,
+    BR_CRC_ERROR,
     BR_PARAM_ERROR,
     CMD_NAMES,
     DEFAULT_DLL,
@@ -405,6 +406,53 @@ def phase_stale(report: Report, bridge: Bridge, ctx: dict) -> None:
                  % (count, len(devices), ctx["device_count"]))
 
 
+def phase_integrity(report: Report, bridge: Bridge, ctx: dict) -> None:
+    """CONFIG_SET must verify its payload before the flash page is erased.
+
+    These frames carry a valid length but corrupted contents, so they must be
+    rejected by the semantic check in the firmware, not by the length table.
+    Nothing here writes: every case is expected to stop before config_set().
+    """
+    baseline = bridge.expect(0x50)
+
+    def unchanged(label: str) -> None:
+        now = bridge.expect(0x50)
+        report.check("integrity", label, now == baseline,
+                     "%d bytes differ"
+                     % sum(1 for a, b in zip(now, baseline) if a != b))
+
+    # CRC-32 covers the first 36 bytes; a flipped CRC must be detected.
+    bad = bytearray(baseline)
+    bad[39] ^= 0xFF
+    expect_reject(report, bridge, "integrity", "CONFIG_SET bad CRC",
+                  bytes([0x51, 40]) + bytes(bad), status=BR_CRC_ERROR)
+    unchanged("config unchanged after bad CRC")
+
+    # Header checks come before the CRC, so a corrupted magic/version is a
+    # parameter error even with a now-stale CRC.
+    bad = bytearray(baseline)
+    bad[0] ^= 0xFF
+    expect_reject(report, bridge, "integrity", "CONFIG_SET bad magic",
+                  bytes([0x51, 40]) + bytes(bad), status=BR_PARAM_ERROR)
+    bad = bytearray(baseline)
+    bad[4] ^= 0xFF
+    expect_reject(report, bridge, "integrity", "CONFIG_SET bad version",
+                  bytes([0x51, 40]) + bytes(bad), status=BR_PARAM_ERROR)
+
+    # An out-of-range field is rejected whether or not the block carries a
+    # correct checksum.
+    bad = bytearray(baseline)
+    bad[6] = 0x00                       # i2c_addr below 0x08
+    expect_reject(report, bridge, "integrity", "CONFIG_SET bad i2c_addr",
+                  bytes([0x51, 40]) + bytes(bad), status=BR_PARAM_ERROR)
+    crc = demo.crc32(bytes(bad[:36]))
+    bad[36:40] = crc.to_bytes(4, "little")
+    expect_reject(report, bridge, "integrity",
+                  "CONFIG_SET bad i2c_addr with valid CRC",
+                  bytes([0x51, 40]) + bytes(bad), status=BR_PARAM_ERROR)
+    unchanged("config unchanged after bad fields")
+
+
 def fuzz_frames(rng: random.Random, specs: list, count: int) -> list:
     by_code = {spec.code: spec for spec in specs}
     # Only quick, read-only commands: a fuzz run must not spend minutes in
@@ -612,6 +660,7 @@ def main(argv=None) -> int:
             phase_arguments(report, bridge, ctx)
             phase_structure(report, bridge, ctx)
             phase_stale(report, bridge, ctx)
+            phase_integrity(report, bridge, ctx)
             if args.fuzz > 0:
                 phase_fuzz(report, bridge, specs, ctx, args.fuzz, args.seed)
             phase_verify(report, bridge, ctx)

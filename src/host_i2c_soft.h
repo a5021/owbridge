@@ -18,6 +18,9 @@ void host_i2c_soft_poll(void);
 /** @brief 1 while an I2C transaction is active (START..STOP), 0 when idle */
 uint8_t host_i2c_soft_busy(void);
 
+/** @brief Monotonic count of observed SCL/SDA edges (wraps at 2^32) */
+uint32_t host_i2c_soft_edge_count(void);
+
 #ifdef __cplusplus
 }
 #endif

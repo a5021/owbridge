@@ -20,6 +20,7 @@
 #include "ds2413.h"
 
 #include "fast_copy.h"
+#include "profile.h"
 
 /* --- Bus state ------------------------------------------------------------ */
 
@@ -1066,12 +1067,23 @@ static uint8_t poll_eeprom_write(br_response_t *resp)
         if (!ds2431_write_scratchpad_poll()) {
             return 0u;
         }
+        if (!ds2431_last_command_ok()) {
+            resp_simple(resp, BR_CMD_EEPROM_WRITE, BR_BUS_ERROR);
+            return 1u;
+        }
         ds2431_read_scratchpad(eeprom_scratch);
         eeprom_step = 1u;
         return 0u;
     case 1u:
         if (!ds2431_read_scratchpad_poll()) {
             return 0u;
+        }
+        /* The library verifies the scratchpad CRC-16 and compares the
+           read-back payload with what was sent. Never copy when that check
+           failed: the device would program corrupted data. */
+        if (!ds2431_last_command_ok()) {
+            resp_simple(resp, BR_CMD_EEPROM_WRITE, BR_CRC_ERROR);
+            return 1u;
         }
         ds2431_copy_scratchpad();
         eeprom_step = 2u;
@@ -1196,7 +1208,20 @@ static uint8_t poll_config_set(br_response_t *resp)
 {
     struct br_config cfg;
     fast_copy(&cfg, bus.cmd.data, BR_CONFIG_SIZE);
+
+    /* A config block carries its own CRC-32. Verify it before touching the
+       flash page: a corrupted i2c_addr would make the I2C build unreachable,
+       and the old firmware silently replaced the CRC instead of checking it. */
+    uint8_t check = config_check(&cfg);
+    if (check != CONFIG_CHECK_OK) {
+        resp_simple(resp, BR_CMD_CONFIG_SET,
+                    (check == CONFIG_CHECK_CRC) ? BR_CRC_ERROR : BR_PARAM_ERROR);
+        return 1u;
+    }
+
+    profile_config_set_begin();
     uint8_t ok = config_set(&cfg);
+    profile_config_set_end();
     resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_PARAM_ERROR);
     return 1u;
 }

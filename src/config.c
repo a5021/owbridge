@@ -105,19 +105,24 @@ static void config_defaults(struct br_config *cfg)
 
 static uint8_t config_fields_valid(const struct br_config *cfg);
 
-static uint8_t config_valid(const struct br_config *cfg)
+uint8_t config_check(const struct br_config *cfg)
 {
-    if (cfg->magic != BR_CONFIG_MAGIC) {
-        return 0u;
+    if (cfg == 0) {
+        return CONFIG_CHECK_FIELDS;
     }
-    if (cfg->version != BR_CONFIG_VERSION) {
-        return 0u;
+    if (cfg->magic != BR_CONFIG_MAGIC || cfg->version != BR_CONFIG_VERSION) {
+        return CONFIG_CHECK_HEADER;
     }
     if (!config_fields_valid(cfg)) {
-        return 0u;
+        return CONFIG_CHECK_FIELDS;
     }
     uint32_t crc = config_crc32((const uint8_t *)cfg, BR_CONFIG_SIZE - 4u);
-    return (crc == cfg->crc32) ? 1u : 0u;
+    return (crc == cfg->crc32) ? CONFIG_CHECK_OK : CONFIG_CHECK_CRC;
+}
+
+static uint8_t config_valid(const struct br_config *cfg)
+{
+    return (config_check(cfg) == CONFIG_CHECK_OK) ? 1u : 0u;
 }
 
 static uint8_t config_fields_valid(const struct br_config *cfg)

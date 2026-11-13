@@ -36,8 +36,18 @@ struct br_config {
     uint32_t crc32;
 };
 
+/** @brief Result of config_check() */
+#define CONFIG_CHECK_OK     0u
+#define CONFIG_CHECK_HEADER 1u  /**< wrong magic or version */
+#define CONFIG_CHECK_FIELDS 2u  /**< a field is outside its valid range */
+#define CONFIG_CHECK_CRC    3u  /**< CRC-32 does not match the payload */
+
 /** @brief Load the config from flash, writing defaults when invalid */
 void config_init(void);
+
+/** @brief Validate a complete config block, including its CRC-32
+ *  @return one of CONFIG_CHECK_* */
+uint8_t config_check(const struct br_config *cfg);
 
 /** @brief Pointer to the in-RAM copy of the config */
 const struct br_config *config_get(void);

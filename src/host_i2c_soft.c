@@ -24,6 +24,7 @@
 #include "host_i2c_soft.h"
 #include "bridge.h"
 #include "config.h"
+#include "profile.h"
 
 #include "stm32f0xx.h"
 
@@ -75,6 +76,10 @@ static uint8_t tx_byte;
 static uint8_t last_scl;
 static uint8_t last_sda;
 
+/* Incremented on every observed bus edge. The main loop uses the count to
+   distinguish a slow transaction (edges keep arriving) from a stalled bus. */
+static uint32_t edge_count;
+
 /* --- Helpers -------------------------------------------------------------- */
 
 static inline void i2c_start(void)
@@ -94,7 +99,9 @@ static inline void i2c_stop(void)
            engine and latch BUSY here; the main-loop poll completes them, so
            the STOP handler stays short enough for a 15 us STOP->START
            turnaround. */
+        profile_submit_begin();
         bridge_submit(rx_buf, rx_idx);
+        profile_submit_end();
     }
     state = I2C_IDLE;
     SDA_RELEASE();
@@ -234,6 +241,7 @@ void host_i2c_soft_init(void)
 
     last_scl = SCL_READ();
     last_sda = SDA_READ();
+    edge_count = 0u;
 }
 
 void host_i2c_soft_poll(void)
@@ -247,6 +255,7 @@ void host_i2c_soft_poll(void)
     if (scl == last_scl && sda == last_sda) {
         return;
     }
+    edge_count++;
 
     /* START/STOP: SDA edge while SCL is high. */
     if (sda != last_sda && scl) {
@@ -273,4 +282,9 @@ void host_i2c_soft_poll(void)
 uint8_t host_i2c_soft_busy(void)
 {
     return (state != I2C_IDLE) ? 1u : 0u;
+}
+
+uint32_t host_i2c_soft_edge_count(void)
+{
+    return edge_count;
 }

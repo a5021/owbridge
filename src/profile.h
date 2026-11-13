@@ -35,6 +35,16 @@ extern volatile uint32_t prof_bridge_min;
 extern volatile uint32_t prof_bridge_max;
 extern volatile uint32_t prof_bridge_sum;
 extern volatile uint32_t prof_bridge_count;
+extern volatile uint32_t prof_bridge_last;      /**< duration of the last call */
+extern volatile uint32_t prof_bridge_hist[8];   /**< log2 buckets, see profile.c */
+
+extern volatile uint32_t prof_gap_max;          /**< longest gap between polls */
+
+extern volatile uint32_t prof_start_missed;     /**< START during bridge_poll */
+extern volatile uint32_t prof_start_missed_max; /**< poll duration of the worst */
+
+extern volatile uint32_t prof_submit_max;       /**< worst bridge_submit() time */
+extern volatile uint32_t prof_config_set_us;    /**< wall time of config_set() */
 
 extern volatile uint32_t prof_cmd_reset_ms;
 extern volatile uint32_t prof_cmd_search_ms;
@@ -49,6 +59,11 @@ void profile_i2c_begin(void);
 void profile_i2c_end(void);
 void profile_bridge_begin(void);
 void profile_bridge_end(void);
+void profile_start_check(uint8_t idle_before, uint8_t busy_after);
+void profile_submit_begin(void);
+void profile_submit_end(void);
+void profile_config_set_begin(void);
+void profile_config_set_end(void);
 void profile_experiment(void);
 
 #else
@@ -60,6 +75,15 @@ static inline void profile_i2c_begin(void) {}
 static inline void profile_i2c_end(void) {}
 static inline void profile_bridge_begin(void) {}
 static inline void profile_bridge_end(void) {}
+static inline void profile_start_check(uint8_t idle_before, uint8_t busy_after)
+{
+    (void)idle_before;
+    (void)busy_after;
+}
+static inline void profile_submit_begin(void) {}
+static inline void profile_submit_end(void) {}
+static inline void profile_config_set_begin(void) {}
+static inline void profile_config_set_end(void) {}
 static inline void profile_experiment(void) {}
 
 #endif

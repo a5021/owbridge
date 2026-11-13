@@ -40,7 +40,8 @@
 int main(void)
 {
 #if defined(HOST_IF_I2C)
-    uint32_t i2c_busy_since = 0u;
+    uint32_t i2c_edge_ms = 0u;
+    uint32_t i2c_edges = 0u;
     uint8_t i2c_was_busy = 0u;
 #endif
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
@@ -75,9 +76,9 @@ int main(void)
         /* Keep the millisecond counter advancing even when the bus is idle:
            every other call site sits in a branch that only runs while the
            I2C master is active, which would freeze stats_uptime(). */
-        (void)board_millis();
+        uint32_t now_ms = board_millis();
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
-        if (!prof_cmd_done && board_millis() > 1000u) {
+        if (!prof_cmd_done && now_ms > 1000u) {
             profile_experiment();
         }
         profile_loop_begin();
@@ -105,13 +106,25 @@ int main(void)
             bridge_poll();
 #if defined(OWBRIDGE_PROFILE)
             profile_bridge_end();
+            profile_start_check(1u, host_i2c_soft_busy());
 #endif
-        } else if (!i2c_was_busy) {
-            i2c_was_busy = 1u;
-            i2c_busy_since = board_millis();
-        } else if ((uint32_t)(board_millis() - i2c_busy_since) > 50u) {
-            bridge_poll(); /* safety valve: never starve the 1-Wire */
-            i2c_busy_since = board_millis();
+        } else {
+            uint32_t edges = host_i2c_soft_edge_count();
+            if (!i2c_was_busy) {
+                i2c_was_busy = 1u;
+                i2c_edges = edges;
+                i2c_edge_ms = now_ms;
+            } else if (edges != i2c_edges) {
+                i2c_edges = edges;
+                i2c_edge_ms = now_ms;
+            } else if ((uint32_t)(now_ms - i2c_edge_ms) > 50u) {
+                /* Safety valve: only a bus with no edges for 50 ms (a wedged
+                   master or a held clock) may delay the 1-Wire state machine.
+                   A valid long frame keeps producing edges, so it is never
+                   interrupted by a long bridge poll. */
+                bridge_poll();
+                i2c_edge_ms = now_ms;
+            }
         }
 #endif
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)

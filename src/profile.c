@@ -25,6 +25,21 @@ volatile uint32_t prof_bridge_min = 0xFFFFFFFFu;
 volatile uint32_t prof_bridge_max = 0u;
 volatile uint32_t prof_bridge_sum = 0u;
 volatile uint32_t prof_bridge_count = 0u;
+volatile uint32_t prof_bridge_last = 0u;
+volatile uint32_t prof_bridge_hist[8];
+
+/* Longest interval between two consecutive bridge_poll() calls, in us. It
+   bounds how long the 1-Wire state machine may go unserviced; values up to
+   ~131 ms are exact (the 16-bit timer may wrap once). */
+volatile uint32_t prof_gap_max = 0u;
+
+/* A "missed start" is an I2C START that arrived while bridge_poll() was
+   running: the bus went from idle to busy across one poll. */
+volatile uint32_t prof_start_missed = 0u;
+volatile uint32_t prof_start_missed_max = 0u;
+
+volatile uint32_t prof_submit_max = 0u;
+volatile uint32_t prof_config_set_us = 0u;
 
 volatile uint32_t prof_cmd_reset_ms = 0u;
 volatile uint32_t prof_cmd_search_ms = 0u;
@@ -35,6 +50,12 @@ volatile uint32_t prof_cmd_done = 0u;
 static uint32_t t_loop;
 static uint32_t t_i2c;
 static uint32_t t_bridge;
+static uint32_t t_submit;
+static uint32_t t_config;
+
+/* Gap tracking between consecutive bridge_poll() calls. */
+static uint32_t t_prev_bridge;
+static uint8_t have_prev_bridge;
 
 static inline uint32_t now_us(void)
 {
@@ -96,7 +117,14 @@ void profile_i2c_end(void)
 
 void profile_bridge_begin(void)
 {
-    t_bridge = now_us();
+    uint32_t now = now_us();
+    if (have_prev_bridge) {
+        uint32_t gap = dt_us(t_prev_bridge);
+        if (gap > prof_gap_max) {
+            prof_gap_max = gap;
+        }
+    }
+    t_bridge = now;
 }
 
 void profile_bridge_end(void)
@@ -110,6 +138,52 @@ void profile_bridge_end(void)
     }
     prof_bridge_sum += dt;
     prof_bridge_count++;
+    prof_bridge_last = dt;
+
+    /* Log2 histogram: bucket 0 is 0-1 us, then 2-3, 4-7, ... 64-127, >=128. */
+    uint32_t idx = 0u;
+    uint32_t v = dt;
+    while (v > 1u && idx < 7u) {
+        v >>= 1;
+        idx++;
+    }
+    prof_bridge_hist[idx]++;
+
+    t_prev_bridge = now_us();
+    have_prev_bridge = 1u;
+}
+
+void profile_start_check(uint8_t idle_before, uint8_t busy_after)
+{
+    if (idle_before && busy_after) {
+        prof_start_missed++;
+        if (prof_bridge_last > prof_start_missed_max) {
+            prof_start_missed_max = prof_bridge_last;
+        }
+    }
+}
+
+void profile_submit_begin(void)
+{
+    t_submit = now_us();
+}
+
+void profile_submit_end(void)
+{
+    uint32_t dt = dt_us(t_submit);
+    if (dt > prof_submit_max) {
+        prof_submit_max = dt;
+    }
+}
+
+void profile_config_set_begin(void)
+{
+    t_config = now_us();
+}
+
+void profile_config_set_end(void)
+{
+    prof_config_set_us = dt_us(t_config);
 }
 
 static void run_cmd(const uint8_t *frame, uint8_t len, volatile uint32_t *out_ms)
