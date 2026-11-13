@@ -74,8 +74,10 @@ static uint8_t tx_len;
 static uint8_t tx_idx;
 static uint8_t tx_byte;
 
-static uint8_t last_scl;
-static uint8_t last_sda;
+/* PA4 and PA5 are adjacent, so the two lines are sampled as one 2-bit field:
+   SCL is bit 0, SDA bit 1. Comparing the field is one shift, one mask and one
+   compare instead of two of each. */
+static uint8_t last_pair;
 
 /* Incremented on every observed bus edge. The main loop uses the count to
    distinguish a slow transaction (edges keep arriving) from a stalled bus. */
@@ -247,26 +249,28 @@ void host_i2c_soft_init(void)
     tx_len = bridge_response_len();
     tx_idx = 0u;
 
-    last_scl = SCL_READ();
-    last_sda = SDA_READ();
+    last_pair = (uint8_t)((GPIOA->IDR >> SCL_PIN) & 3u);
     edge_count = 0u;
 }
 
 void host_i2c_soft_poll(void)
 {
     uint32_t idr = GPIOA->IDR;
-    uint8_t scl = (uint8_t)((idr >> SCL_PIN) & 1u);
-    uint8_t sda = (uint8_t)((idr >> SDA_PIN) & 1u);
+    uint8_t pair = (uint8_t)((idr >> SCL_PIN) & 3u);
 
     /* Fast path: most polls see no line change. Returning immediately keeps
        the sampling period short and reduces STOP detection latency. */
-    if (scl == last_scl && sda == last_sda) {
+    if (pair == last_pair) {
         return;
     }
     edge_count++;
 
+    uint8_t scl = (uint8_t)(pair & 1u);
+    uint8_t sda = (uint8_t)(pair >> 1);
+    uint8_t changed = (uint8_t)(pair ^ last_pair);
+
     /* START/STOP: SDA edge while SCL is high. */
-    if (sda != last_sda && scl) {
+    if ((changed & 2u) != 0u && scl) {
         if (!sda) {
             i2c_start();
         } else {
@@ -275,7 +279,7 @@ void host_i2c_soft_poll(void)
     }
 
     /* SCL edge. */
-    if (scl != last_scl) {
+    if ((changed & 1u) != 0u) {
         if (scl) {
             i2c_scl_rising(sda);
         } else {
@@ -283,8 +287,7 @@ void host_i2c_soft_poll(void)
         }
     }
 
-    last_scl = scl;
-    last_sda = sda;
+    last_pair = pair;
 }
 
 uint8_t host_i2c_soft_busy(void)
