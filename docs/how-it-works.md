@@ -95,8 +95,10 @@ while the host keeps polling. Nothing blocks.
   check (ROM CRC-8, DS2431 CRC-16, config CRC-32) are still protected.
 - **A missed START while a long command runs.** The polled slave does not
   sample SCL during a `bridge_poll()` step (10-50 us). A START that arrives
-  inside one is lost; the host sees a NACK or `FF FF` and must retry, or leave
-  about 100 us after STOP. A logic-analyzer capture at 100 kHz puts the
+  inside one is lost; the host sees a NACK or `FF FF` and must retry. A pause
+  between polls lowers the count, not the rate: 20 scan cycles at a 5 s
+  cadence lost about 7% of the BUSY polls both at a 0 us gap and at 250 us
+  (149 and 91 NACKs per cycle). A logic-analyzer capture at 100 kHz puts the
   misses at the poll cadence (median 96 us since the previous STOP), not at
   the 15 us chained read after STOP: 4.2% of the read addresses were NACKed.
   Measured: 3 827 retries over 120 long commands at 100 kHz, none at 20 kHz,
@@ -314,9 +316,10 @@ The millisecond figures are dominated by the USB adapter. Inside the firmware,
 the worst instant command (`OW_GET_DEVICES` with nine cached ROMs) takes about
 **10 us** from STOP detection to the latched response, which is why the CH341A
 can chain a write and a read with its ~15 us gap and still see the answer.
-That does **not** apply to long commands: the first `bridge_poll()` after STOP
-can take tens of microseconds, so a chained START may be missed and retried
-(see [`i2c-timing.md`](i2c-timing.md)).
+`STATS_GET` used to be the one exception and was rewritten to fit (see
+[`i2c-timing.md`](i2c-timing.md)). That does **not** apply to long commands:
+the first `bridge_poll()` after STOP can take tens of microseconds, so a
+chained START may be missed and retried.
 
 ## Where the code lives
 

@@ -1272,22 +1272,20 @@ static void start_stats_get(const br_command_t *cmd)
 
 static uint8_t poll_stats_get(br_response_t *resp)
 {
-    uint8_t n = 0u;
+    /* resp->data is last_resp + 3, which is word-aligned (see
+       last_resp_store). One 32-bit store per counter keeps the response
+       inside the master's STOP->START turnaround: the byte-wise version
+       reloaded resp->data four times per counter and, together with the
+       32-bit division behind stats_uptime(), overran the 15 us turnaround
+       of a 100 kHz CH341A master. */
+    uint32_t *out = (uint32_t *)(void *)resp->data;
     for (uint8_t i = 0u; i < BR_STAT_COUNT; i++) {
-        uint32_t v = stats_get(i);
-        resp->data[n++] = (uint8_t)(v >> 24);
-        resp->data[n++] = (uint8_t)(v >> 16);
-        resp->data[n++] = (uint8_t)(v >> 8);
-        resp->data[n++] = (uint8_t)(v);
+        out[i] = __builtin_bswap32(stats_get(i));
     }
-    uint32_t up = stats_uptime();
-    resp->data[n++] = (uint8_t)(up >> 24);
-    resp->data[n++] = (uint8_t)(up >> 16);
-    resp->data[n++] = (uint8_t)(up >> 8);
-    resp->data[n++] = (uint8_t)(up);
+    out[BR_STAT_COUNT] = __builtin_bswap32(stats_uptime());
     resp->status = BR_OK;
     resp->cmd = BR_CMD_STATS_GET;
-    resp->len = n;
+    resp->len = (uint8_t)(4u * (BR_STAT_COUNT + 1u));
     return 1u;
 }
 

@@ -34,5 +34,5 @@ uint32_t stats_get(uint8_t kind)
 
 uint32_t stats_uptime(void)
 {
-    return board_millis() / 1000u;
+    return board_seconds();
 }

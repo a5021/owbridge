@@ -26,6 +26,9 @@ void board_reset(void);
 /** @brief Milliseconds since board_init() (wraps after ~49 days) */
 uint32_t board_millis(void);
 
+/** @brief Whole seconds since board_init() */
+uint32_t board_seconds(void);
+
 #if defined(HOST_IF_UART)
 /* --- Debug output helpers (UART build only) ------------------------------- */
 /* USART1 is owned by host_uart.c (PA2 = TX, PA3 = RX). These helpers are not

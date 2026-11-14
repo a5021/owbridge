@@ -35,6 +35,8 @@
 #define CONSOLE_BRR ((((uint32_t)OW_SYSCLK_MHZ * 1000000u) + (CONSOLE_BAUD / 2u)) / CONSOLE_BAUD)
 
 static uint32_t ms_count;
+static uint32_t ms_frac;
+static uint32_t sec_count;
 
 /* --- GPIO helpers --------------------------------------------------------- */
 
@@ -230,6 +232,8 @@ void board_put_hex(uint8_t b)
 static void board_tick_init(void)
 {
     ms_count = 0u;
+    ms_frac = 0u;
+    sec_count = 0u;
     SysTick->LOAD = ((uint32_t)OW_SYSCLK_MHZ * 1000u) - 1u;
     SysTick->VAL = 0u;
     SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
@@ -240,8 +244,21 @@ uint32_t board_millis(void)
     if (SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk) {
         (void)SysTick->CTRL; /* read clears COUNTFLAG */
         ms_count++;
+        if (++ms_frac >= 1000u) {
+            ms_frac = 0u;
+            sec_count++;
+        }
     }
     return ms_count;
+}
+
+/* Whole seconds since boot. Maintained by the tick so that the STATS_GET
+   response path does not have to divide by 1000: that division is a libgcc
+   call on the Cortex-M0 and made the STOP handler outlast a 100 kHz
+   master's turnaround. */
+uint32_t board_seconds(void)
+{
+    return sec_count;
 }
 
 /* --- Indicators / actuator ------------------------------------------------ */

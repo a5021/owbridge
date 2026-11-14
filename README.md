@@ -149,13 +149,22 @@ A focused probe on the same bench (30 searches, 40 read-alls, 40 32-byte
 writes and 10 EEPROM writes) saw **3 827 retries at 100 kHz and 0 at 20 kHz**;
 every command still completed with `OK`.
 
-Host contract while a long command is `BUSY`: leave at least **100 us** after
-STOP before the next START, or treat a NACK / all-`FF` read as "not ready" and
-retry. The demo and the torture harness do the latter; 250 us is a comfortable
-gap for hosts that prefer not to retry. `CONFIG_SET` is different: it blocks
-for about 23 ms, so the host must retry across it (the demo's 10 s timeout
-covers this). Instant commands are unaffected: they finish inside the STOP
-handler, in about 10 us.
+Host contract while a long command is `BUSY`: treat a NACK / all-`FF` read as
+"not ready" and retry; the demo and the harnesses do exactly that. A pause
+between polls does *not* remove the misses: while `BUSY` the firmware calls
+`bridge_poll()` back-to-back, so a host START lands inside a step with
+roughly the same probability no matter how long it waited. On a 5 s scan
+cadence at 100 kHz, 20 cycles produced 149 NACKs per cycle with back-to-back
+polls and 91 with a 250 us gap, about 7% of the BUSY polls in both cases: the
+gap halves the number of polls, not the loss rate. At 20 kHz the same cadence
+measured zero. `CONFIG_SET` is different: it blocks for about 23 ms, so the
+host must retry across it (the demo's 10 s timeout covers this). Instant
+commands are built inside the STOP handler too. The slowest one,
+`STATS_GET`, used to outlast the adapter's 15 us turnaround (it reloaded the
+response pointer per byte and divided the uptime by 1000); it now writes
+32-bit words and takes its uptime from a tick counter, so the chained read is
+served — 0 of 300 reads NACKed at the same turnaround. A host whose
+turnaround is shorter than the handler still needs the retry rule.
 
 The per-loop edge bookkeeping for the 50 ms valve is gated to one check per
 millisecond. An earlier version that read the edge counter on every busy-loop
@@ -512,6 +521,22 @@ python protocol_test.py --destructive
 The randomized host-link fuzzing session and its coverage are summarized in
 [`docs/i2c-fuzz.md`](docs/i2c-fuzz.md).
 
+[`tools/owbridge_scan.py`](tools/owbridge_scan.py) is the host side of the
+library's `4_scan_mode` example: one broadcast resolution write, then a
+broadcast Convert T and a `TEMP_READ_ALL` every `--interval` seconds. It prints
+the NACK and poll counts of both commands per cycle plus a summary, which shows
+what a normal measurement cadence actually costs on the service window:
+
+```text
+python owbridge_scan.py
+python owbridge_scan.py --poll-gap 250
+python owbridge_scan.py --speed 20k --cycles 50 --json
+```
+
+On the 9-device bench at 100 kHz, 20 cycles of 12-bit scan mode measured 149
+NACKs per cycle with back-to-back polls and 91 with `--poll-gap 250`, about 7%
+of the BUSY polls in both cases; at 20 kHz the same run measured zero.
+
 ## Source layout
 
 ```
@@ -527,6 +552,7 @@ src/host_uart.c     USART1: DMA TX/RX, binary protocol and AT commands
 src/host_spi.c      SPI1 slave, polled RXNE/TXE
 src/host_i2c_soft.c software I2C slave, polled SCL/SDA edges
 tools/owbridge_demo.py stdlib-only host demo for the I2C build
+tools/owbridge_scan.py scan-mode cadence with per-cycle NACK statistics
 tools/protocol_test.py protocol boundary and fuzz tests (same transport)
 docs/demo.md        demo scenarios, captured output and quirks
 docs/how-it-works.md illustrated walkthrough with captured traffic

@@ -133,8 +133,12 @@ command's slots inside the STOP handler). Those windows are 45-93 us on this
 bench (see `docs/i2c-timing.md`), so a START chained ~15 us after STOP is
 missed and the read address is NACKed. A focused rerun on the final firmware
 measured 3 827 retries over 120 long commands at 100 kHz and **0** at 20 kHz;
-every command still completed. The earlier explanation that the adapter alone
-caused these NACKs was not proven.
+every command still completed. A 4 MHz logic-analyzer capture later showed
+every NACK at the adapter's 15 us minimum STOP-to-START gap and none at longer
+gaps. The same probe isolated `STATS_GET`: its STOP handler outlasted that
+15 us window, so an instant query could NACK too. Its response loop has since
+been rewritten and the torture cadence now measures no `STATS_GET` NACKs at
+all; see `docs/i2c-timing.md`, "Instant commands and the STOP window".
 
 ## Host write losses
 

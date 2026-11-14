@@ -138,6 +138,35 @@ end-to-end retry count from 2 746 to 3 899, because more calls with the same
 work cost more overhead in total. Reducing the work itself (the table-driven
 CRC and codec) is the lever that helps.
 
+### Instant commands and the STOP window
+
+An instant command is built inside the STOP handler, before the main loop
+resumes sampling, so for those the window is the handler itself. The CH341A
+minimum STOP-to-START turnaround is 1.5 bit times: **15.0 us at 100 kHz and
+76.5 us at 20 kHz**, both measured at 4 MHz. A handler that outlasts it loses
+the first read address: the slave NACKs `0x61` and the host has to poll again.
+A 100-call probe at the 15 us turnaround isolated one command:
+
+| Command | Response | First read NACKed |
+|---|---:|---:|
+| `OW_GET_COUNT` | 1 B | 0 / 100 |
+| `FIRMWARE_VER` | 26 B | 0 / 100 |
+| `CONFIG_GET` | 40 B | 0 / 100 |
+| `STATS_GET` | 32 B | 40-60 / 100 |
+
+`STATS_GET` was the outlier. Its byte-wise loop reloaded `resp->data` four
+times per counter (28 extra loads for 32 bytes) and `stats_uptime()` called
+the Cortex-M0 `__udivsi3` for the division by 1000. Both are gone: one
+byte-swapped 32-bit store per counter, and a seconds counter advanced by the
+SysTick handler, so the division never reaches the hot path. The same probe
+then measured **0 of 300** misses at the 15 us turnaround. This also explains
+why the effect never appeared at 20 kHz: 76.5 us is far longer than any
+instant handler.
+
+The torture harness polls `STATS_GET` every 10 s. A 40-minute run on the fixed
+build saw no `STATS_GET` miss at all, together with 169 023 bulk rounds, zero
+bad responses and zero error counters.
+
 ### Where the search time goes
 
 The library's `OW_PROFILE` hooks are wired into the profiled build
@@ -158,15 +187,23 @@ dominates; speeding up the sink (two word compares instead of a libc
 `memcmp()` call per cached ROM) is real but does not move the end-to-end
 count outside run-to-run noise.
 
-Host rule for long operations: either leave at least **100 us** after STOP
-(250 us is comfortable), or treat a NACK / all-`FF` read as "not ready" and
-retry, as `Bridge.command()` already does. The demo has two host-side knobs:
+Host rule for long operations: treat a NACK / all-`FF` read as "not ready" and
+retry, as `Bridge.command()` already does. A pause between polls does not make
+the misses go away: while a command is `BUSY` the firmware runs
+`bridge_poll()` back-to-back, so the host START hits a step with about the same
+probability at any poll spacing. A 5 s scan cadence over 20 cycles at 100 kHz
+lost about 7% of the BUSY polls both with a 0 us gap (149 NACKs per cycle) and
+with 250 us (91 per cycle): fewer polls, the same rate. At 20 kHz the same
+cadence measured zero. `tools/owbridge_scan.py` reproduces this. The demo has
+two host-side knobs:
 
 - `--poll-gap` spaces BUSY polls (default 0). Before the packed sampler it
   cut the retry count from 2 746 to 2 081 over 120 long commands at 100 kHz;
   with the sampler at about 2 286 back-to-back, 250 us measures 2 205 (inside
   the run-to-run spread) and costs about 7% of the search time, so the
-  default is back-to-back.
+  default is back-to-back. On the 5 s scan cadence it halves the polls
+  (2 146 to 1 342 per cycle) and with them the NACK count (149 to 91), while
+  the per-poll loss rate stays at about 7%: the retry rule is still required.
 - `--short-poll` reads only the status byte while BUSY and re-reads the full
   header once the status leaves BUSY. On at 20 kHz by default, where a search
   drops from about 1.19 s to 0.63-0.68 s with no retries; off at 100 kHz,
@@ -220,9 +257,11 @@ The current path removes each of those costs:
 
 Measured worst case for an instant command (`OW_GET_DEVICES` with nine cached
 ROMs, 72 response bytes) is about **10 us** from STOP detection to the latched
-response (489 SysTick counts at 48 MHz). `FIRMWARE_VER` is about 5 us. The
-CH341A 15 us turnaround is therefore serviced without a host-side gap; only
-long 1-Wire operations still use the `BUSY`/poll flow.
+response (489 SysTick counts at 48 MHz). `FIRMWARE_VER` is about 5 us.
+`STATS_GET` was the exception until its response loop and uptime division were
+rewritten (see "Instant commands and the STOP window" above); after that fix
+every instant command fits inside the CH341A 15 us turnaround. Only long
+1-Wire operations still use the `BUSY`/poll flow.
 
 Host rule: no mandatory gap for instant commands. For long operations, poll
 the 3-byte header until the status is not `BUSY`; a NACK/`0xFF` still means

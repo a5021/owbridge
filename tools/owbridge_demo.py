@@ -29,13 +29,13 @@ Examples
 Poll pacing
 ------------
 While a long command is BUSY the firmware runs 1-Wire state-machine steps of
-up to a few tens of microseconds. A START that lands inside one is lost (the
-slave only samples SCL between steps), and the loss probability is roughly
-step_time / gap. With the packed sampler and the short BUSY poll the gap no
-longer measurably reduces retries (about 2 286 back-to-back versus 2 205 at
-250 us over 120 long commands at 100 kHz), and it costs about 7% of the
-search time, so the default is back-to-back; ``--poll-gap`` remains for hosts
-that prefer it.
+up to a few tens of microseconds back-to-back. A START that lands inside one
+is lost (the slave only samples SCL between steps). Because the polls are
+continuous, the per-poll loss rate does not depend on the spacing: on a 5 s
+scan cadence at 100 kHz about 7% of the BUSY polls are lost with a 0 us gap
+(149 NACKs per cycle) and with 250 us (91 per cycle). The gap halves the
+number of polls but not the rate, and costs about 7% of the search time, so
+the default is back-to-back; ``--poll-gap`` remains for hosts that prefer it.
 
 ``--short-poll`` reads only the status byte while BUSY and re-reads the full
 header once the status leaves BUSY, which roughly halves the transaction

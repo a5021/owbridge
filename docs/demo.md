@@ -61,13 +61,15 @@ transaction. Two adapter quirks shape the transport:
   step (10-50 us) and be missed. A logic-analyzer capture at 100 kHz shows
   these misses at the poll cadence (median 96 us after the previous STOP),
   not at the 15 us chained read that follows STOP. The demo's retry rules
-  above absorb them. A host that needs every frame accepted on the first try
-  must leave at least 100 us after STOP (250 us is comfortable), or use UART,
-  whose frames carry a CRC-8. `CONFIG_SET` blocks for ~23 ms and always needs
-  the retry rule. The demo has two host-side knobs. `--poll-gap` pauses
-  between BUSY polls (default 0): with the packed sampler and the short BUSY
-  poll it no longer measurably reduces retries (about 2 286 back-to-back
-  versus 2 205 at 250 us over 120 long commands at 100 kHz), while it costs
+  above absorb them, and they stay mandatory at 100 kHz: a pause between
+  polls only lowers their number. Over 20 scan cycles at a 5 s cadence the
+  bus lost about 7% of the BUSY polls both with a 0 us gap (149 NACKs per
+  cycle) and with a 250 us gap (91 per cycle); at 20 kHz the same run lost
+  none. `tools/owbridge_scan.py` measures this directly. `CONFIG_SET` blocks
+  for ~23 ms and always needs the retry rule. The demo has two host-side
+  knobs. `--poll-gap` pauses between BUSY polls (default 0); on the scan
+  cadence it halves the polls (2 146 to 1 342 per cycle) and with them the
+  NACK count (149 to 91), while the per-poll rate is unchanged, and it costs
   about 7% of the search time. `--short-poll` reads one status byte while
   BUSY and re-reads the header when the status leaves BUSY: on at 20 kHz by
   default, where a search drops from about 1.19 s to 0.63-0.68 s with no

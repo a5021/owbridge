@@ -109,9 +109,10 @@ The first status read of a 1-Wire command can arrive while the main loop is
 still running the 1-Wire start/poll; the read address is then missed. The
 pure I2C bulk path and all instant queries had no NACKs at all.
 
-If zero NACKs are required for the 1-Wire commands too, leave a short gap
-before their first status read. That lowers the achieved bus load, so it was
-not used for this test.
+A pause before the first status read does not remove these misses: while a
+command is `BUSY` the firmware polls back-to-back, so the START still lands
+inside a step with the same probability (see `docs/i2c-timing.md`). The
+harness handles them by retrying, which is the documented host rule.
 
 ## SCL timing and 100 kHz compliance
 

@@ -215,10 +215,14 @@ transactions. The remaining levers are therefore the host's polling shape
 architecture (hardware I2C peripheral), which the interrupt-free requirement
 excludes.
 
-The host contract is unchanged: while a long command is BUSY, either leave at
-least 100 us after STOP (250 us is comfortable) or treat a NACK / all-`FF` read
-as "not ready" and retry. `CONFIG_SET` blocks for about 23 ms and always needs
-the retry rule.
+The host contract is unchanged: while a long command is BUSY, treat a NACK /
+all-`FF` read as "not ready" and retry. A pause after STOP lowers the number of
+missed STARTs but not their rate, because the firmware polls back-to-back
+between transactions (measured later on a scan cadence: about 7% of the BUSY
+polls at both 0 us and 250 us). `CONFIG_SET` blocks for about 23 ms and always
+needs the retry rule. Instant commands fit inside the adapter's 15 us STOP
+window except `STATS_GET`, which was fixed after this report (see
+[`i2c-timing.md`](i2c-timing.md), "Instant commands and the STOP window").
 
 ## Commits
 
