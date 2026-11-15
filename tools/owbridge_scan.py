@@ -106,7 +106,12 @@ def verify_resolution(bridge, sensors, bits: int, out) -> dict:
 
 
 def run_cycle(bridge, sensors, timeout: float) -> dict:
-    """Broadcast Convert T, wait for BUSY to clear, then read every scratchpad."""
+    """Broadcast Convert T, wait for BUSY to clear, then read every scratchpad.
+
+    ``sensors`` is the cached DS18B20 list in cache order. The response has one
+    fixed 2-byte slot per sensor, so a sensor without a reading shows up as
+    ``None`` at its own position instead of shifting its neighbours.
+    """
     conv = bridge.command(CONVERT_CMD, b"", timeout=timeout)
     if conv.status != demo.BR_OK:
         raise demo.BridgeStatus(CONVERT_CMD, conv.status, "broadcast Convert T")
@@ -116,14 +121,20 @@ def run_cycle(bridge, sensors, timeout: float) -> dict:
         raise demo.BridgeStatus(READ_ALL_CMD, read.status, "TEMP_READ_ALL")
 
     if len(read.data) != 2 * len(sensors):
-        raise demo.BridgeError("TEMP_READ_ALL returned %d bytes for %d sensor(s)"
-                               % (len(read.data), len(sensors)))
+        raise demo.BridgeError(
+            "TEMP_READ_ALL returned %d byte(s) for %d sensor(s); firmware "
+            "older than 1.1.0 drops failed readings instead of keeping "
+            "their slot" % (len(read.data), len(sensors)))
 
     words = [int.from_bytes(read.data[i:i + 2], "big")
              for i in range(0, len(read.data), 2)]
-    if any(word < TEMP_MIN or word > TEMP_MAX for word in words):
+    measured = [word for word in words if word != demo.BR_TEMP_INVALID]
+    if any(word < TEMP_MIN or word > TEMP_MAX for word in measured):
         raise demo.BridgeError("temperature outside -55..+125 C: %s"
-                               % ", ".join(str(word) for word in words))
+                               % ", ".join(str(word) for word in measured))
+    missing = [demo.fmt_rom_dallas(rom)
+               for rom, word in zip(sensors, words)
+               if word == demo.BR_TEMP_INVALID]
 
     return {
         "convert": {"nacks": conv.nacks, "polls": conv.polls,
@@ -131,7 +142,9 @@ def run_cycle(bridge, sensors, timeout: float) -> dict:
         "read": {"nacks": read.nacks, "polls": read.polls,
                  "elapsed_s": round(read.elapsed, 6)},
         "words": words,
-        "values": [round(demo.decode_temp(word), 2) for word in words],
+        "values": [None if word == demo.BR_TEMP_INVALID
+                   else round(demo.decode_temp(word), 2) for word in words],
+        "missing": missing,
         "nacks": conv.nacks + read.nacks,
         "polls": conv.polls + read.polls,
     }
@@ -156,6 +169,8 @@ def summarise(records, elapsed_s: float) -> dict:
     read_polls = sum(rec["read"]["polls"] for rec in records)
     latencies = [rec["convert"]["elapsed_s"] * 1000.0 for rec in records]
     read_lat = [rec["read"]["elapsed_s"] * 1000.0 for rec in records]
+    missing = sum(len(rec["missing"]) for rec in records)
+    cycles_missing = sum(1 for rec in records if rec["missing"])
 
     return {
         "cycles": len(records),
@@ -182,6 +197,8 @@ def summarise(records, elapsed_s: float) -> dict:
                            round(max(read_lat), 1)] if read_lat else [],
         },
         "per_cycle_nacks": [rec["nacks"] for rec in records],
+        "missing_readings": missing,
+        "cycles_with_missing": cycles_missing,
     }
 
 
@@ -196,7 +213,9 @@ def print_header(args, addr: int, firmware: str, out) -> None:
 
 
 def print_cycle(index: int, rec: dict, out) -> None:
-    temperatures = "  ".join("%6.2f" % value for value in rec["values"])
+    cells = ["%6.2f" % value if value is not None else "    --"
+             for value in rec["values"]]
+    temperatures = "  ".join(cells)
     print("  %3d  %s  %s  nack %3d+%3d=%-4d  polls %6d  %5.2f%%  %6.1f/%5.1f ms"
           % (index, time.strftime("%H:%M:%S"), temperatures,
              rec["convert"]["nacks"], rec["read"]["nacks"], rec["nacks"],
@@ -222,6 +241,8 @@ def print_summary(summary: dict, out) -> None:
     if spread:
         out.kv("per cycle", "min %d  median %.1f  max %d"
                % (min(spread), statistics.median(spread), max(spread)))
+    out.kv("readings", "%d slot(s) without a valid reading in %d cycle(s)"
+           % (summary["missing_readings"], summary["cycles_with_missing"]))
 
 
 # --------------------------------------------------------------------------- #
@@ -372,17 +393,23 @@ def main(argv=None) -> int:
             cached = bridge.ow_get_devices(0, 16)
             result["checks"]["cache_unchanged"] = cached == devices
             result["checks"]["all_cycles_ok"] = len(records) > 0
+            result["checks"]["all_sensors_read"] = summary["missing_readings"] == 0
 
             if not args.json:
                 print()
                 print_summary(summary, out)
                 if cached != devices:
                     out.warn("device cache changed during the run")
+                if summary["missing_readings"]:
+                    out.warn("%d reading(s) missing; the sensor kept its slot, "
+                             "see the sensors above for the affected ROMs"
+                             % summary["missing_readings"])
                 if len(records) != index:
                     out.warn("only %d of %d cycles completed" % (len(records), index))
 
             ok = (result["checks"]["rom_crc"]
                   and result["checks"]["cache_unchanged"]
+                  and result["checks"]["all_sensors_read"]
                   and result["checks"].get("resolution_uniform", True)
                   and result["checks"]["all_cycles_ok"])
             result["checks"]["pass"] = bool(ok)

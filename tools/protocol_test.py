@@ -649,9 +649,17 @@ def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
                  count == ctx["device_count"] and len(devices) == count,
                  "search=%d cached=%d baseline=%d"
                  % (count, len(devices), ctx["device_count"]))
-    report.check("verify", "temperature array intact",
+    report.check("verify", "temperature slots match the cache",
                  len(temps) == ctx["temp_count"],
-                 "%d values, baseline %d" % (len(temps), ctx["temp_count"]))
+                 "%d slot(s), baseline %d; a shorter array means firmware "
+                 "older than 1.1.0, which drops failed readings"
+                 % (len(temps), ctx["temp_count"]))
+    signed = [w - 0x10000 if w & 0x8000 else w
+              for w in temps if w != demo.BR_TEMP_INVALID]
+    report.check("verify", "temperature values plausible",
+                 all(-550 <= v <= 1250 for v in signed),
+                 "%d value(s), %d invalid slot(s)"
+                 % (len(signed), len(temps) - len(signed)))
     report.check("verify", "statistics readable", "uptime_s" in stats,
                  "uptime %d s" % stats["uptime_s"])
 

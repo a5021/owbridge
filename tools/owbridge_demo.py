@@ -80,6 +80,9 @@ BR_NOT_SUPPORTED = 0x09
 BR_QUEUE_FULL = 0x0A
 BR_ABORTED = 0x0B
 
+#: Slot value in TEMP_READ_ALL: the cached DS18B20 has no valid reading
+BR_TEMP_INVALID = 0x8000
+
 STATUS_NAMES = {
     BR_OK: "OK",
     BR_BUSY: "BUSY",
@@ -222,6 +225,28 @@ def decode_temp(word: int) -> float:
     if word & 0x8000:
         word -= 0x10000
     return word / 10.0
+
+
+def pair_temperatures(devices: list, words: list) -> list:
+    """Map TEMP_READ_ALL words onto the cached DS18B20s, positionally.
+
+    The bridge returns one 2-byte slot per cached DS18B20, in cache order, and
+    leaves BR_TEMP_INVALID in a slot whose scratchpad could not be read. The
+    slot index is therefore the device's index among the ``0x28`` entries of
+    the cache, so a failed sensor can neither be skipped nor shift its
+    neighbours.
+
+    Returns a list of ``(rom, word_or_None)``. A length mismatch means the
+    firmware predates 1.1.0, where failed reads were dropped from the response
+    and positions could not be trusted; that is reported instead of guessed.
+    """
+    if len(words) != len(devices):
+        raise BridgeError(
+            "TEMP_READ_ALL returned %d value(s) for %d DS18B20; firmware "
+            "older than 1.1.0 returns a compacted list, so values cannot be "
+            "mapped to ROMs" % (len(words), len(devices)))
+    return [(rom, None if word == BR_TEMP_INVALID else word)
+            for rom, word in zip(devices, words)]
 
 
 def bcd_hex(data: bytes) -> str:
@@ -797,6 +822,11 @@ class Bridge:
         return int.from_bytes(raw[:2], "big")
 
     def temp_read_all(self) -> list:
+        """Return one 16-bit word per cached DS18B20, in cache order.
+
+        A slot equal to BR_TEMP_INVALID (0x8000) means that sensor has no valid
+        reading. Use pair_temperatures() to tie the words to their ROMs.
+        """
         raw = self.expect(0x22, timeout=10.0)
         return [int.from_bytes(raw[i:i + 2], "big") for i in range(0, len(raw) - len(raw) % 2, 2)]
 
@@ -999,13 +1029,23 @@ def sc_temp(bridge: Bridge, out: Out, args) -> dict:
 
     out.title("Read all scratchpads")
     readings = bridge.temp_read_all()
-    out.kv("values", str(len(readings)))
-    if len(readings) != len(devices):
-        out.warn("read back %d values for %d sensors" % (len(readings), len(devices)))
+    pairs = pair_temperatures(devices, readings)
+    missing = [rom for rom, word in pairs if word is None]
+    out.kv("values", "%d slot(s), %d without a reading" % (len(pairs), len(missing)))
 
     rows = []
     detail = []
-    for rom, word in zip(devices, readings):
+    for rom, word in pairs:
+        if word is None:
+            detail.append({
+                "rom": rom.hex(),
+                "label": fmt_rom_dallas(rom),
+                "word": "0x%04X" % BR_TEMP_INVALID,
+                "celsius": None,
+            })
+            rows.append([fmt_rom_dallas(rom), out.c.red("no reading")]
+                        + ([] if args.fast else ["?", "?", "?"]))
+            continue
         celsius = decode_temp(word)
         entry = {
             "rom": rom.hex(),
@@ -1041,10 +1081,11 @@ def sc_temp(bridge: Bridge, out: Out, args) -> dict:
     else:
         out.table(["ROM", "C", "resolution", "TH/TL", "parasite"], rows)
 
-    values = [entry["celsius"] for entry in detail]
+    values = [entry["celsius"] for entry in detail if entry["celsius"] is not None]
     return {
         "convert": {"status": resp.status_name, "polls": resp.polls, "elapsed_s": round(dt, 4)},
         "devices": detail,
+        "missing": [fmt_rom_dallas(rom) for rom in missing],
         "min_c": min(values) if values else None,
         "max_c": max(values) if values else None,
     }
@@ -1069,10 +1110,13 @@ def sc_watch(bridge: Bridge, out: Out, args) -> dict:
             stats = bridge.stats_get()
             bridge.temp_convert()
             readings = bridge.temp_read_all()
-            values = [round(decode_temp(w), 4) for w in readings]
+            pairs = pair_temperatures(devices, readings)
+            values = [None if word is None else round(decode_temp(word), 4)
+                      for _rom, word in pairs]
             stamp = time.strftime("%H:%M:%S")
             if not out.json_mode:
-                cells = ["%.2f" % value for value in values]
+                cells = ["--" if value is None else "%.2f" % value
+                         for value in values]
                 line = ("  %s  uptime %-5d  %s"
                         % (stamp, stats["uptime_s"], "  ".join(cell.center(17) for cell in cells)))
                 print(line.rstrip(), flush=True)
@@ -1498,10 +1542,12 @@ def sc_selftest(bridge: Bridge, out: Out, args) -> dict:
 
     def temp():
         bridge.temp_convert()
-        values = bridge.temp_read_all()
-        if not values:
+        words = bridge.temp_read_all()
+        if not words:
             raise BridgeError("no readings")
-        return ", ".join("%.2f C" % decode_temp(v) for v in values)
+        cells = ["--" if word == BR_TEMP_INVALID else "%.2f C" % decode_temp(word)
+                 for word in words]
+        return ", ".join(cells)
     check("temperature", temp)
 
     def eeprom():

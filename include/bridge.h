@@ -37,6 +37,20 @@ extern "C" {
 #define BR_MAX_RESP 160u  /**< Maximum response data bytes */
 #define BR_QUEUE_SIZE 2u  /**< Command queue depth */
 
+/* --- Payload markers ------------------------------------------------------ */
+
+/**
+ * @brief Slot value in a TEMP_READ_ALL response: no valid reading.
+ *
+ * Every cached DS18B20 owns one 2-byte slot, in cache order, whether or not
+ * its scratchpad could be read. A slot that stays at this value has no valid
+ * temperature: the device did not answer, its scratchpad failed CRC, or no
+ * conversion has been run since power-up. The signed range of a DS18B20
+ * reading is -8800..+2000 (0.1 C units), so this value cannot collide with a
+ * real measurement.
+ */
+#define BR_TEMP_INVALID 0x8000
+
 /* --- Status codes --------------------------------------------------------- */
 
 enum {

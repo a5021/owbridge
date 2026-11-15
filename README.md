@@ -259,7 +259,7 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.0.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.1.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
@@ -321,7 +321,7 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 |------|---------|------------|----------|
 | 0x20 | `TEMP_CONVERT` | `rom[8]`, or an empty payload for broadcast | `temp x 10` for an addressed device; conversion status in broadcast mode |
 | 0x21 | `TEMP_READ` | `rom[8]` | `temp x 10` |
-| 0x22 | `TEMP_READ_ALL` | - | `temp x 10` x n |
+| 0x22 | `TEMP_READ_ALL` | - | `temp x 10`, one slot per cached DS18B20 |
 | 0x23 | `TEMP_SET_RES` | `rom[8]`, `bits` | - |
 | 0x24 | `TEMP_GET_RES` | `rom[8]` | `bits` |
 | 0x25 | `TEMP_SET_ALARM` | `rom[8]`, `th`, `tl` | - |
@@ -329,6 +329,25 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 | 0x27 | `TEMP_COPY` | `rom[8]` | - |
 | 0x28 | `TEMP_RECALL` | `rom[8]` | - |
 | 0x29 | `TEMP_DETECT_P` | `rom[8]` | `mode` |
+
+`TEMP_READ_ALL` answers with one fixed 2-byte slot per **cached DS18B20**, in
+cache order (the order in which `OW_GET_DEVICES` returns the `0x28` entries),
+so its length is always `2 x` the number of DS18B20 entries in the cache. A
+slot stays at `0x8000` (`BR_TEMP_INVALID` in `include/bridge.h`) when that
+sensor has no valid reading: no answer, a scratchpad CRC failure, or no
+conversion since power-up. A failed sensor therefore keeps its place instead
+of shifting its neighbours, and `BR_OK` means the command completed, not that
+every sensor answered. Use `TEMP_READ` with a ROM when a per-device status
+code is needed. Devices of other families in the cache get no slot. Firmware
+before 1.1.0 dropped failed readings instead, which shortened the array and
+made the positions unreliable.
+
+The cache itself only changes when the host asks: `OW_SEARCH`,
+`OW_SEARCH_ALM` and `OW_CLEAR_CACHE` replace or empty it, and a hot-plugged
+device does not appear until the next search. Between such a command and the
+following `TEMP_READ_ALL` the slot order is therefore stable, so no cache
+generation field is needed. Do not queue a search between `TEMP_CONVERT` and
+`TEMP_READ_ALL` unless the newer device set is what you want to read.
 
 ### DS2431 EEPROM
 

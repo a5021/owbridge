@@ -804,15 +804,43 @@ static uint8_t poll_temp_read(br_response_t *resp)
 
 /* --- TEMP_READ_ALL -------------------------------------------------------- */
 
+/* The response is sized before the first device is touched: one fixed 2-byte
+   slot per cached DS18B20, in cache order, pre-filled with BR_TEMP_INVALID.
+   A failed read leaves its slot at the marker instead of being skipped, so the
+   response always describes the cache and never the list of successes; the
+   host can tell which sensor is missing from its position alone. */
+
 static uint8_t read_all_index;
+static uint8_t read_all_slot;
+static uint8_t read_all_slots;
 static uint8_t read_all_step;
+
+static uint8_t count_temp_devices(void)
+{
+    uint8_t n = 0u;
+    for (uint8_t i = 0u; i < cache_count(); i++) {
+        const uint8_t *rom = cache_get(i);
+        if (rom != 0 && rom[0] == DS18B20_FAMILY_CODE) {
+            n++;
+        }
+    }
+    return n;
+}
 
 static void start_temp_read_all(const br_command_t *cmd)
 {
     (void)cmd;
+    read_all_slots = count_temp_devices();
+    /* Pre-fill before the first device is touched: a slot that is never
+       overwritten stays at the marker. The length is published only when the
+       command completes; resp_busy() reports zero meanwhile. */
+    for (uint8_t i = 0u; i < read_all_slots; i++) {
+        bus.resp.data[2u * i] = (uint8_t)(BR_TEMP_INVALID >> 8);
+        bus.resp.data[2u * i + 1u] = (uint8_t)(BR_TEMP_INVALID & 0xFFu);
+    }
     read_all_index = 0u;
+    read_all_slot = 0u;
     read_all_step = 0u;
-    bus.resp.len = 0u;
 }
 
 static uint8_t poll_temp_read_all(br_response_t *resp)
@@ -830,6 +858,7 @@ static uint8_t poll_temp_read_all(br_response_t *resp)
         }
         resp->status = BR_OK;
         resp->cmd = BR_CMD_TEMP_READ_ALL;
+        resp->len = (uint8_t)(2u * read_all_slots);
         return 1u;
     }
     if (!ds18b20_read_scratchpad_poll()) {
@@ -837,11 +866,15 @@ static uint8_t poll_temp_read_all(br_response_t *resp)
     }
     if (ds18b20_last_command_ok()) {
         int16_t t = decode_temp(temp_scratch);
-        if ((uint16_t)resp->len + 2u <= BR_MAX_RESP) {
-            resp->data[resp->len++] = (uint8_t)(t >> 8);
-            resp->data[resp->len++] = (uint8_t)(t & 0xFFu);
+        if (read_all_slot < read_all_slots) {
+            resp->data[2u * read_all_slot] = (uint8_t)((uint16_t)t >> 8);
+            resp->data[2u * read_all_slot + 1u] = (uint8_t)((uint16_t)t & 0xFFu);
         }
+    } else {
+        /* The slot keeps BR_TEMP_INVALID; the command still completes OK. */
+        stats_count(BR_STAT_PRESENCE_FAIL);
     }
+    read_all_slot++;
     read_all_step = 0u;
     return 0u;
 }
@@ -1241,7 +1274,7 @@ static void start_firmware_ver(const br_command_t *cmd)
 static uint8_t poll_firmware_ver(br_response_t *resp)
 {
     static const uint8_t ver[] __attribute__((aligned(4))) =
-        "owbridge 1.0.0 (lib 3.1.3)";
+        "owbridge 1.1.0 (lib 3.1.3)";
     resp->status = BR_OK;
     resp->cmd = BR_CMD_FIRMWARE_VER;
     resp->len = (uint8_t)sizeof(ver) - 1u;

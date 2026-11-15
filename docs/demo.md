@@ -116,7 +116,7 @@ owbridge demo  addr 0x30  100k  C:\Windows\System32\CH341DLLA64.DLL
 
 Firmware
 --------
-  version            owbridge 1.0.0 (lib 3.1.3)
+  version            owbridge 1.1.0 (lib 3.1.3)
 
 Configuration (flash page 0x08007C00)
 -------------------------------------
@@ -209,6 +209,14 @@ signed 16-bit temperature in **0.1 C units** (`0x00E5` = 229 = 22.9 C), not
 the raw 1/16 C scratchpad word. The demo decodes it with `value / 10`; the
 raw scratchpad register (e.g. `0x016E` = 366) is `366 / 16 = 22.875 C`, which
 matches.
+
+`TEMP_READ_ALL` returns one 2-byte slot per cached DS18B20, in cache order, so
+the slot index is the sensor's index among the `0x28` entries. A sensor that
+cannot be read leaves `0x8000` in its slot and the command still returns `OK`,
+which is why the demo prints `no reading` instead of shifting the neighbouring
+values. The demo refuses an array whose length does not match the cached sensor
+count: firmware before 1.1.0 dropped failed readings, and those positions
+cannot be trusted.
 
 A broadcast conversion is followed by a scratchpad read from every sensor. On a
 multi-drop bus those reads collide, so the driver reports a CRC failure and the
@@ -323,7 +331,7 @@ Bus load (5 s)
 ```text
 Self test
 ---------
-  PASS firmware version       owbridge 1.0.0 (lib 3.1.3)
+  PASS firmware version       owbridge 1.1.0 (lib 3.1.3)
   PASS config crc             ok
   PASS bus presence           present
   PASS search                 9 devices

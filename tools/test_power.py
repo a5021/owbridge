@@ -65,11 +65,6 @@ class Bridge:
         return None
 
 
-def s16(payload):
-    v = (payload[0] << 8) | payload[1]
-    return v - 0x10000 if v & 0x8000 else v
-
-
 def main():
     b = Bridge(PORT, BAUD)
     time.sleep(0.3)
@@ -89,8 +84,13 @@ def main():
         fr = b.cmd(0x22, b"", limit=6.0)
         if fr:
             st, cmd, body, crc = fr
-            temps = [s16(body[i:i + 2]) / 10.0 for i in range(0, len(body) - 1, 2)]
-            print("TEMP_READ_ALL:", temps)
+            words = [int.from_bytes(body[i:i + 2], "big")
+                     for i in range(0, len(body) - 1, 2)]
+            # 0x8000 is the "no valid reading" slot marker, not 3276.8 C.
+            temps = ["--" if w == 0x8000
+                     else "%.1f" % ((w - 0x10000 if w & 0x8000 else w) / 10.0)
+                     for w in words]
+            print("TEMP_READ_ALL:", " ".join(temps))
 
     b.close()
 

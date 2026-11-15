@@ -194,7 +194,9 @@ Temperatures
 
 The conversion takes 750 ms at 12-bit resolution; that is the `BUSY` period the
 host sees. The bridge reads each scratchpad by ROM, converts the 16-bit word
-to **0.1 C units**, and returns two bytes per sensor. The demo prints the
+to **0.1 C units**, and returns two bytes per cached DS18B20 in cache order. A
+sensor that does not answer leaves `0x8000` in its own slot, so the array keeps
+the cache's shape and one bad sensor cannot shift the others. The demo prints the
 temperature with `/10`.
 
 `TEMP_READ_ALL` is a long command too: about 189 ms for seven sensors, because
