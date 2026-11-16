@@ -660,8 +660,10 @@ def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
                  all(-550 <= v <= 1250 for v in signed),
                  "%d value(s), %d invalid slot(s)"
                  % (len(signed), len(temps) - len(signed)))
-    report.check("verify", "statistics readable", "uptime_s" in stats,
-                 "uptime %d s" % stats["uptime_s"])
+    report.check("verify", "statistics readable",
+                 "uptime_s" in stats and "read_fail" in stats,
+                 "uptime %d s, read failures %d"
+                 % (stats["uptime_s"], stats.get("read_fail", -1)))
 
 
 def phase_destructive(report: Report, bridge: Bridge, ctx: dict) -> None:

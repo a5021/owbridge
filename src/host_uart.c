@@ -17,7 +17,9 @@
  */
 
 #include "host_uart.h"
+#include "version.h"
 #include "bridge.h"
+#include "cache.h"
 #include "config.h"
 #include "protocol.h"
 
@@ -26,7 +28,9 @@
 #include <string.h>
 
 #define UART_RX_BUF 128u
-#define UART_TX_BUF 200u
+/* AT+DEVS with the full 16-ROM cache needs 5 bytes of prefix plus 16 x 17
+   bytes of ROM text and CRLF; the old 200-byte buffer truncated it. */
+#define UART_TX_BUF 288u
 #define AT_LINE_BUF 48u
 
 /* --- RX DMA ring ---------------------------------------------------------- */
@@ -37,7 +41,7 @@ static uint8_t rx_head;
 /* --- TX DMA --------------------------------------------------------------- */
 
 static uint8_t tx_dma_buf[UART_TX_BUF];
-static uint8_t tx_pos;
+static uint16_t tx_pos;
 static uint8_t tx_busy;
 
 /* --- Binary RX decoder ---------------------------------------------------- */
@@ -121,7 +125,7 @@ static void tx_put_hex(uint8_t b)
     tx_putc(hex[b & 0x0Fu]);
 }
 
-static void uart_tx_start(uint8_t len)
+static void uart_tx_start(uint16_t len)
 {
     if (len == 0u) {
         return;
@@ -149,22 +153,71 @@ static void push_binary_response(void)
     uart_tx_start(tx_pos);
 }
 
+static void at_error(void)
+{
+    tx_pos = 0u;
+    tx_puts("ERROR\r\n");
+    uart_tx_start(tx_pos);
+    at_active = 0u;
+    /* A failed submit may have latched a QUEUE_FULL response. Consume that
+       sequence number here so it is not also sent as a binary frame. */
+    last_seq = bridge_response_seq();
+}
+
+/** Bridge command an AT command is waiting for; 0 when it has several. */
+static uint8_t at_expected_cmd(uint8_t cmd)
+{
+    switch (cmd) {
+    case AT_OWRST: return BR_CMD_OW_RESET;
+    case AT_OWSRCH: return BR_CMD_OW_SEARCH;
+    case AT_OWCNT:  return BR_CMD_OW_GET_COUNT;
+    case AT_STAT:   return BR_CMD_STATS_GET;
+    case AT_DEVS:   return BR_CMD_OW_GET_DEVICES;
+    default:        return 0u;
+    }
+}
+
 static void push_at_response(void)
 {
     const uint8_t *resp = bridge_response_ptr();
     uint8_t n = bridge_response_len();
     uint8_t status = (n >= 3u) ? resp[0] : BR_BUS_ERROR;
+    uint8_t rcmd = (n >= 3u) ? resp[1] : 0u;
 
     if (status == BR_BUSY) {
         return; /* wait for the final response */
     }
 
-    /* AT+TEMP is two commands: Convert T, then read every scratchpad. */
+    /* AT+TEMP is two commands: Convert T, then read every scratchpad. Only a
+       reply to the expected command may advance the sequence. */
     if (at_cmd == AT_TEMP && at_temp_step == 0u) {
+        if (status != BR_OK || rcmd != BR_CMD_TEMP_CONVERT) {
+            at_error();
+            return;
+        }
         uint8_t frame[2] = { BR_CMD_TEMP_READ_ALL, 0u };
+        if (bridge_submit(frame, 2u) == 0u) {
+            /* Queue full: never leave the AT command waiting forever. */
+            at_error();
+            return;
+        }
         at_temp_step = 1u;
-        bridge_submit(frame, 2u);
         return;
+    }
+    if (at_cmd == AT_TEMP && at_temp_step == 1u &&
+        (status != BR_OK || rcmd != BR_CMD_TEMP_READ_ALL)) {
+        at_error();
+        return;
+    }
+
+    /* A response to a binary frame submitted while an AT command was in
+       flight must not be rendered as the AT command's result. */
+    {
+        uint8_t expect = at_expected_cmd(at_cmd);
+        if (expect != 0u && rcmd != expect) {
+            at_error();
+            return;
+        }
     }
 
     tx_pos = 0u;
@@ -181,7 +234,7 @@ static void push_at_response(void)
         tx_puts("OK\r\n");
         break;
     case AT_VER:
-        tx_puts("owbridge 1.1.0 (lib 3.1.3)\r\n");
+        tx_puts(OWBRIDGE_VERSION "\r\n");
         break;
     case AT_OWRST:
         tx_puts("OK\r\n");
@@ -195,8 +248,14 @@ static void push_at_response(void)
     case AT_TEMP:
         tx_puts("TEMP");
         for (uint8_t i = 0u; i < resp[2]; i += 2u) {
-            int16_t t = (int16_t)((resp[3u + i] << 8) | resp[3u + i + 1u]);
+            uint16_t word = (uint16_t)((resp[3u + i] << 8) | resp[3u + i + 1u]);
             tx_puts(" ");
+            if (word == BR_TEMP_INVALID) {
+                /* Keep the slot position; 0x8000 is not -3276.8 C. */
+                tx_puts("N/A");
+                continue;
+            }
+            int16_t t = (int16_t)word;
             tx_put_int(t / 10);
             tx_puts(".");
             tx_put_int((t % 10) < 0 ? -(t % 10) : (t % 10));
@@ -277,7 +336,7 @@ static void at_submit(uint8_t cmd)
     }
     if (cmd == AT_VER) {
         tx_pos = 0u;
-        tx_puts("owbridge 1.1.0 (lib 3.1.3)\r\n");
+        tx_puts(OWBRIDGE_VERSION "\r\n");
         uart_tx_start(tx_pos);
         return;
     }
@@ -316,15 +375,18 @@ static void at_submit(uint8_t cmd)
         frame[0] = BR_CMD_OW_GET_DEVICES;
         frame[1] = 2u;
         frame[2] = 0u;
-        frame[3] = 12u;
+        frame[3] = BR_CACHE_MAX;
         len = 4u;
         break;
     default:
         return;
     }
-    bridge_submit(frame, len);
+    /* Arm the AT state before submitting: bridge_submit() can latch a
+       QUEUE_FULL response synchronously, and that reply must be rendered by
+       push_at_response() rather than sent as a binary frame. */
     at_cmd = cmd;
     at_active = 1u;
+    bridge_submit(frame, len);
 }
 
 /* --- Binary RX decoder ---------------------------------------------------- */

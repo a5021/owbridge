@@ -1,24 +1,40 @@
-# Host-side test tools
+# Host-side tools
 
-Python scripts that drive the bridge over its selected host interface. They
-were used for the bench validation described in the top-level `README.md`.
+Host software for the bridge. The first three are the main tools; the
+`test_*.py` scripts at the bottom are the older UART-only harnesses.
 
 ## Requirements
 
-- Python 3.8+
-- `pyserial`
+- `owbridge_demo.py`, `owbridge_scan.py` and `protocol_test.py`: Windows with
+  the CH341A driver (`CH341DLLA64.DLL`), Python 3.8+, no third-party packages.
+- The older `test_*.py` scripts: Python 3.8+ and `pyserial`, a UART build and a
+  serial port (edit `PORT`/`BAUD` at the top of each script; the bench used
+  `COM5` at 115200).
+- `test_host_helpers.py`: Python 3.8+ only, no hardware.
 
-```
-pip install pyserial
-```
+All scripts live in this directory; run them from here.
 
-## Configuration
+## Main tools
 
-Edit `PORT` and `BAUD` at the top of each script. The bench used `COM5` at
-`115200` (USART variant). For the UART build, `AT` commands and the binary
-frame share the same line; the scripts send one or the other.
+| Script | What it does |
+|--------|--------------|
+| `owbridge_demo.py` | Walks every firmware command over the CH341A (I2C at address `0x30`). `info`, `scan`, `temp`, `watch`, `eeprom`, `pio`, `raw`, `config`, `stats`, `timing`, `queue`, `selftest`. `--json` for machine-readable output. |
+| `owbridge_scan.py` | Scan-mode host: one broadcast resolution write, then Convert T + `TEMP_READ_ALL` on a fixed cadence. Reports BUSY-poll NACKs and slots without a valid reading. Supports `--speed 20k`, `--poll-gap`, `--cycles`, `--json`. |
+| `protocol_test.py` | Boundary, argument, fuzz and final-health tests for the command descriptor table. `python protocol_test.py --fuzz 10000`, `--speed 20k`, `--destructive`. |
 
-## Scripts
+`TEMP_READ_ALL` returns one 2-byte slot per cached DS18B20, in cache order,
+with `0x8000` for a sensor that has no valid reading. All three tools use
+`owbridge_demo.pair_temperatures()` to map words to ROMs and refuse an array
+whose length does not match the cache (pre-1.1.0 firmware compacted failed
+reads, which made positions unreliable).
+
+## Host-only unit tests
+
+`python3 -m unittest -v test_host_helpers` checks the positional mapping,
+the `0x8000` handling and the scan summary without a board. This is the fast
+regression gate for the temperature-slot contract.
+
+## Legacy UART scripts
 
 | Script | What it does |
 |--------|--------------|
@@ -29,12 +45,9 @@ frame share the same line; the scripts send one or the other.
 | `test_devices.py` | DS2431 memory/scratchpad read, DS2413 PIO write/read, config/stats. |
 | `test_timing.py` | Measures the AT command response time. |
 
-## Notes
-
-- The binary protocol is `AA 55 [cmd][len][data...] [crc8]` and the response is
-  `5A A5 [status][cmd][len][data...] [crc8]` (Dallas/Maxim CRC-8, poly 0x8C).
-  The scripts skip `BUSY` responses and wait for the final one.
-- `AT+TEMP` takes about one second: it runs a broadcast Convert T (750 ms at
-  12-bit) and then reads every DS18B20 scratchpad.
-- The SPI and I2C builds need a corresponding master; these scripts only cover
-  the UART transport. Use the binary frame directly for the other transports.
+The binary UART frame is `AA 55 [cmd][len][data...] [crc8]` and the response is
+`5A A5 [status][cmd][len][data...] [crc8]` (Dallas/Maxim CRC-8, poly 0x8C);
+the scripts skip `BUSY` responses and wait for the final one. `AT+TEMP` takes
+about one second: broadcast Convert T (750 ms at 12 bit) followed by
+`TEMP_READ_ALL`, with `N/A` for a sensor without a reading. These scripts only
+cover the UART transport; use the binary frame directly for SPI or I2C.

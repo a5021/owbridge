@@ -716,9 +716,9 @@ class Bridge:
 
     def stats_get(self) -> dict:
         raw = self.expect(0x54)
-        if len(raw) < 32:
-            raise BridgeError("STATS_GET returned %d bytes, expected 32" % len(raw))
-        words = [int.from_bytes(raw[i * 4:i * 4 + 4], "big") for i in range(8)]
+        if len(raw) < 36:
+            raise BridgeError("STATS_GET returned %d bytes, expected 36" % len(raw))
+        words = [int.from_bytes(raw[i * 4:i * 4 + 4], "big") for i in range(9)]
         return {
             "resets": words[0],
             "presence_fail": words[1],
@@ -727,7 +727,8 @@ class Bridge:
             "timeout": words[4],
             "commands": words[5],
             "aborts": words[6],
-            "uptime_s": words[7],
+            "read_fail": words[7],
+            "uptime_s": words[8],
         }
 
     def stats_reset(self) -> None:

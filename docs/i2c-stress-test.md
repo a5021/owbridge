@@ -42,7 +42,7 @@ Periodic tasks, staggered so they do not run at the same instant:
 
 | Period | Task |
 |--------|------|
-| 10 s | `STATS_GET`, parse 7 counters + uptime, reset detection |
+| 10 s | `STATS_GET`, parse 8 counters + uptime, reset detection |
 | 20 s | `OW_GET_COUNT`, `OW_GET_STATUS`, `CONFIG_GET` |
 | 30 s | `OW_RESET` (presence must be 1) |
 | 60 s | `OW_SEARCH` + `OW_GET_DEVICES` (ROM CRC-8 and families), `EEPROM_READ`, `IO_READ` |

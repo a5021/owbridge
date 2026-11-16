@@ -338,7 +338,8 @@ sensor has no valid reading: no answer, a scratchpad CRC failure, or no
 conversion since power-up. A failed sensor therefore keeps its place instead
 of shifting its neighbours, and `BR_OK` means the command completed, not that
 every sensor answered. Use `TEMP_READ` with a ROM when a per-device status
-code is needed. Devices of other families in the cache get no slot. Firmware
+code is needed. Devices of other families in the cache get no slot. Failed scratchpad reads
+also increment the `read_fail` counter in `STATS_GET`. Firmware
 before 1.1.0 dropped failed readings instead, which shortened the array and
 made the positions unreliable.
 
@@ -372,8 +373,14 @@ generation field is needed. Do not queue a search between `TEMP_CONVERT` and
 | 0x51 | `CONFIG_SET` | `config[40]` | - |
 | 0x52 | `FIRMWARE_VER` | - | version string |
 | 0x53 | `RESET` | - | - (the MCU reboots; the response may be lost) |
-| 0x54 | `STATS_GET` | - | 7 x u32 + uptime |
+| 0x54 | `STATS_GET` | - | 8 counters (u32) + uptime |
 | 0x55 | `STATS_RESET` | - | - |
+
+`STATS_GET` returns eight big-endian u32 counters followed by uptime (seconds):
+`resets`, `presence_fail`, `crc_error`, `bus_short`, `timeout`, `commands`,
+`aborts`, `read_fail`. `presence_fail` counts a missing device on `OW_RESET`;
+`read_fail` counts a failed DS18B20 scratchpad read (no answer or bad CRC) in
+`TEMP_READ` and `TEMP_READ_ALL`. The host tools decode both by name.
 
 ### Parameter validation
 
@@ -476,7 +483,7 @@ Verified on a bench with a 1-Wire bus carrying 7 x DS18B20, 1 x DS2431 and
 | raw scratchpad | temp 0x01B0 (27 C), cfg 0x7F (12 bit), CRC valid |
 | DS2431 read memory / scratchpad | OK |
 | DS2413 PIO write/read | OK |
-| `CONFIG_GET` / `STATS_GET` | 40 / 32 bytes |
+| `CONFIG_GET` / `STATS_GET` | 40 / 36 bytes |
 | AT commands (UART build) | all eight; `AT+TEMP` takes about 1 s |
 
 The UART build was exercised end to end. The I2C build was exercised end to

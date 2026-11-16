@@ -20,6 +20,10 @@ enum {
     BR_STAT_TIMEOUT,
     BR_STAT_COMMANDS,
     BR_STAT_ABORTS,
+    /* A scratchpad/MATCH ROM read that failed (no answer or bad CRC), from
+       TEMP_READ and TEMP_READ_ALL. Kept separate from PRESENCE_FAIL, which
+       counts an absent device on OW_RESET. */
+    BR_STAT_READ_FAIL,
     BR_STAT_COUNT
 };
 

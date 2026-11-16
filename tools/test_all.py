@@ -94,8 +94,12 @@ def main():
         st, cmd, body, crc = fr
         print("TEMP_READ_ALL status", st, "len", len(body))
         for i in range(0, len(body) - 1, 2):
-            t = s16(body[i:i + 2])
-            print("  sensor %d: %.1f C" % (i // 2, t / 10.0))
+            word = int.from_bytes(body[i:i + 2], "big")
+            if word == 0x8000:
+                print("  sensor %d: no reading" % (i // 2))
+            else:
+                t = s16(body[i:i + 2])
+                print("  sensor %d: %.1f C" % (i // 2, t / 10.0))
 
     print("\n-- raw scratchpad of first DS18B20 --")
     rom = ds[0]

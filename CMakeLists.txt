@@ -153,6 +153,9 @@ target_include_directories(owbridge PRIVATE
     ${CMSIS_CORE_INCLUDE}
     ${CMSIS_DEVICE_INCLUDE}
 )
+# The bridge cache and the library device table must have the same size;
+# bridge.c enforces this at compile time.
+target_compile_definitions(owbridge PRIVATE OW_MAX_DEVICES=${OW_MAX_DEVICES})
 # Flash is plentiful (31 KB code region), so the firmware - not the fetched
 # library - gets the hot-path options: aligned functions/loops and no
 # loop-to-memcpy conversion. The library keeps OW_OPT; its timing is

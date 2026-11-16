@@ -9,10 +9,13 @@
  */
 
 #include "bridge.h"
+#include "version.h"
 #include "cache.h"
 #include "stats.h"
 #include "config.h"
 #include "board.h"
+
+#include <string.h>
 
 #include "onewire.h"
 #include "ds18b20.h"
@@ -21,6 +24,16 @@
 
 #include "fast_copy.h"
 #include "profile.h"
+
+/* A search fills both the library's device table and the bridge ROM cache.
+   Different sizes would silently cap one of them, so the build passes the
+   same value to both and this check keeps them in step. */
+#ifndef OW_MAX_DEVICES
+#error "OW_MAX_DEVICES must be defined by the build (see CMakeLists.txt)"
+#endif
+#if OW_MAX_DEVICES != BR_CACHE_MAX
+#error "OW_MAX_DEVICES must equal BR_CACHE_MAX (src/cache.h)"
+#endif
 
 /* --- Bus state ------------------------------------------------------------ */
 
@@ -405,10 +418,9 @@ static uint16_t match_reset_pulses[2];
 
 static void start_ow_match(const br_command_t *cmd)
 {
+    /* The descriptor caps len at BR_MAX_DATA, so the payload after the ROM
+       is at most BR_MAX_DATA - 8 and always fits shared_payload. */
     match_payload_len = (uint8_t)(cmd->len - 8u);
-    if (match_payload_len > BR_MAX_DATA) {
-        match_payload_len = 0u;
-    }
     fast_copy(shared_payload, cmd->data + 8u, match_payload_len);
     match_step = 0u;
     /* reset */
@@ -789,7 +801,7 @@ static uint8_t poll_temp_read(br_response_t *resp)
         return 0u;
     }
     if (!ds18b20_last_command_ok()) {
-        stats_count(BR_STAT_PRESENCE_FAIL);
+        stats_count(BR_STAT_READ_FAIL);
         resp_simple(resp, BR_CMD_TEMP_READ, BR_NO_DEVICE);
         return 1u;
     }
@@ -872,7 +884,7 @@ static uint8_t poll_temp_read_all(br_response_t *resp)
         }
     } else {
         /* The slot keeps BR_TEMP_INVALID; the command still completes OK. */
-        stats_count(BR_STAT_PRESENCE_FAIL);
+        stats_count(BR_STAT_READ_FAIL);
     }
     read_all_slot++;
     read_all_step = 0u;
@@ -1257,6 +1269,14 @@ static uint8_t poll_config_set(br_response_t *resp)
         return 1u;
     }
 
+    /* Reprogramming the page with identical contents only wears the flash.
+       config_check() has already fixed magic/version/CRC in cfg, so compare
+       against the validated RAM copy. */
+    if (memcmp(&cfg, config_get(), BR_CONFIG_SIZE) == 0) {
+        resp_simple(resp, BR_CMD_CONFIG_SET, BR_OK);
+        return 1u;
+    }
+
     profile_config_set_begin();
     uint8_t ok = config_set(&cfg);
     profile_config_set_end();
@@ -1273,8 +1293,7 @@ static void start_firmware_ver(const br_command_t *cmd)
 
 static uint8_t poll_firmware_ver(br_response_t *resp)
 {
-    static const uint8_t ver[] __attribute__((aligned(4))) =
-        "owbridge 1.1.0 (lib 3.1.3)";
+    static const uint8_t ver[] __attribute__((aligned(4))) = OWBRIDGE_VERSION;
     resp->status = BR_OK;
     resp->cmd = BR_CMD_FIRMWARE_VER;
     resp->len = (uint8_t)sizeof(ver) - 1u;

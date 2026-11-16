@@ -78,6 +78,7 @@ int main(void)
            every other call site sits in a branch that only runs while the
            I2C master is active, which would freeze stats_uptime(). */
         uint32_t now_ms = board_millis();
+        (void)now_ms; /* the call advances the tick; only the I2C build reads it */
 #if defined(OWBRIDGE_PROFILE) && defined(HOST_IF_I2C)
         if (!prof_cmd_done && now_ms > 1000u) {
             profile_experiment();

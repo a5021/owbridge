@@ -152,7 +152,7 @@ A 100-call probe at the 15 us turnaround isolated one command:
 | `OW_GET_COUNT` | 1 B | 0 / 100 |
 | `FIRMWARE_VER` | 26 B | 0 / 100 |
 | `CONFIG_GET` | 40 B | 0 / 100 |
-| `STATS_GET` | 32 B | 40-60 / 100 |
+| `STATS_GET` | 32 B at the time of the probe (36 B in 1.1.0) | 40-60 / 100 |
 
 `STATS_GET` was the outlier. Its byte-wise loop reloaded `resp->data` four
 times per counter (28 extra loads for 32 bytes) and `stats_uptime()` called
