@@ -10,6 +10,7 @@ import unittest
 
 import owbridge_demo as demo
 import owbridge_scan as scan
+from protocol_test import Spec, payload_for
 
 
 def make_rom(index: int) -> bytes:
@@ -41,6 +42,23 @@ class TemperatureMappingTests(unittest.TestCase):
     def test_signed_decode(self):
         self.assertAlmostEqual(demo.decode_temp(0x00E9), 23.3)
         self.assertAlmostEqual(demo.decode_temp(0xFF38), -20.0)
+
+
+class CommandSpecTests(unittest.TestCase):
+    def test_broadcast_payload_at_data_zero(self):
+        rom = make_rom(1)
+        res = Spec(0x23, "TEMP_SET_RES", 1, 9, rom=rom,
+                   sample=bytes([12]), special=(1, 9))
+        self.assertEqual(payload_for(res, 1), bytes([12]))
+        self.assertEqual(payload_for(res, 9), rom + bytes([12]))
+        alarm = Spec(0x25, "TEMP_SET_ALARM", 2, 10, rom=rom,
+                     sample=bytes([25, 15]), special=(2, 10))
+        self.assertEqual(payload_for(alarm, 2), bytes([25, 15]))
+        self.assertEqual(payload_for(alarm, 10), rom + bytes([25, 15]))
+
+    def test_convert_broadcast_has_no_payload(self):
+        spec = Spec(0x20, "TEMP_CONVERT", 0, 8, special=(0, 8))
+        self.assertEqual(payload_for(spec, 0), b"")
 
 
 def make_record(missing):

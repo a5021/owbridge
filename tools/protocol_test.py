@@ -121,11 +121,11 @@ def build_specs(ctx: dict) -> list:
              rom=rom28, special=(0, 8)),
         Spec(0x21, "TEMP_READ", 8, 8, flags=ARG_ROM, rom=rom28),
         Spec(0x22, "TEMP_READ_ALL", 0, 0),
-        Spec(0x23, "TEMP_SET_RES", 9, 9, flags=ARG_ROM | ARG_RES_BITS,
-             rom=rom28, sample=bytes([bits])),
+        Spec(0x23, "TEMP_SET_RES", 1, 9, flags=ARG_ROM | ARG_RES_BITS,
+             rom=rom28, sample=bytes([bits]), special=(1, 9)),
         Spec(0x24, "TEMP_GET_RES", 8, 8, flags=ARG_ROM, rom=rom28),
-        Spec(0x25, "TEMP_SET_ALARM", 10, 10, flags=ARG_ROM,
-             rom=rom28, sample=bytes([th & 0xFF, tl & 0xFF])),
+        Spec(0x25, "TEMP_SET_ALARM", 2, 10, flags=ARG_ROM,
+             rom=rom28, sample=bytes([th & 0xFF, tl & 0xFF]), special=(2, 10)),
         Spec(0x26, "TEMP_GET_ALARM", 8, 8, flags=ARG_ROM, rom=rom28),
         Spec(0x27, "TEMP_COPY", 8, 8, flags=ARG_ROM, rom=rom28),
         Spec(0x28, "TEMP_RECALL", 8, 8, flags=ARG_ROM, rom=rom28),
@@ -153,6 +153,9 @@ def build_specs(ctx: dict) -> list:
 
 def payload_for(spec: Spec, n: int) -> bytes:
     """Build a syntactically and semantically valid payload of length n."""
+    # Broadcast forms put their arguments at data[0] instead of after a ROM.
+    if spec.special and n < max(spec.special) and len(spec.sample) >= n:
+        return spec.sample[:n]
     base = spec.rom + spec.sample
     if n <= len(base):
         return base[:n]
@@ -315,6 +318,12 @@ def phase_arguments(report: Report, bridge: Bridge, ctx: dict) -> None:
                   bytes([0x23, 9]) + rom28 + bytes([8]))
     expect_reject(report, bridge, "args", "TEMP_SET_RES bits=13",
                   bytes([0x23, 9]) + rom28 + bytes([13]))
+    expect_reject(report, bridge, "args", "TEMP_SET_RES broadcast bits=8",
+                  bytes([0x23, 1, 8]))
+    expect_reject(report, bridge, "args", "TEMP_SET_RES broadcast bits=13",
+                  bytes([0x23, 1, 13]))
+    expect_reject(report, bridge, "args", "TEMP_SET_ALARM broadcast len=1",
+                  bytes([0x25, 1, 25]))
 
     # Boolean flags.
     expect_reject(report, bridge, "args", "OW_SET_PULLUP value=2",

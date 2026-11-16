@@ -38,24 +38,12 @@ import owbridge_demo as demo
 # DS18B20 scan-mode constants
 # --------------------------------------------------------------------------- #
 
-#: Function commands used by the broadcast resolution write (Skip ROM + Write
-#: Scratchpad), matching ds18b20_resolution.c in the library.
-DS18B20_WRITE_SCRATCHPAD = 0x4E
-DS18B20_TH = 0x00
-DS18B20_TL = 0x00
-
 CONVERT_CMD = 0x20
 READ_ALL_CMD = 0x22
-SKIP_ROM_CMD = 0x07
 
 #: Plausible DS18B20 range in 0.1 C units (-55 .. +125 C).
 TEMP_MIN = -550
 TEMP_MAX = 1250
-
-
-def res_config(bits: int) -> int:
-    """Configuration register byte for a resolution: 0x1F | R1R0 << 5."""
-    return 0x1F | ((bits - 9) << 5)
 
 
 # --------------------------------------------------------------------------- #
@@ -66,22 +54,21 @@ def res_config(bits: int) -> int:
 def program_resolution(bridge, bits: int, out) -> dict:
     """Broadcast Write Scratchpad so every sensor uses the same resolution.
 
-    Skip ROM reaches all devices, which is what scan mode needs: the single
-    conversion wait is only correct when the fleet is uniform.
+    The bridge's broadcast TEMP_SET_RES form reaches all devices, which is
+    what scan mode needs: the single conversion wait is only correct when the
+    fleet is uniform. The host no longer needs to know the scratchpad layout.
     """
-    payload = bytes([DS18B20_WRITE_SCRATCHPAD, DS18B20_TH, DS18B20_TL,
-                     res_config(bits)])
-    resp = bridge.command(SKIP_ROM_CMD, payload, timeout=10.0)
+    resp = bridge.temp_set_res_all(bits)
     if resp.status != demo.BR_OK:
-        raise demo.BridgeStatus(SKIP_ROM_CMD, resp.status, "broadcast Write Scratchpad")
+        raise demo.BridgeStatus(0x23, resp.status, "broadcast Write Scratchpad")
     out.kv("config write", "OK  %d B  %d polls  %d NACKs  %.1f ms"
-           % (len(payload), resp.polls, resp.nacks, resp.elapsed * 1000.0))
+           % (1, resp.polls, resp.nacks, resp.elapsed * 1000.0))
     return {
         "status": resp.status,
         "polls": resp.polls,
         "nacks": resp.nacks,
         "elapsed_s": round(resp.elapsed, 6),
-        "payload": payload.hex(),
+        "payload": "%02X" % bits,
     }
 
 

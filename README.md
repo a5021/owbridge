@@ -259,7 +259,7 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.1.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.2.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
@@ -298,9 +298,9 @@ the host keeps polling the response until it becomes `OK` or an error.
 | 0x03 | `OW_READ_BYTE` | - | `data[1]` |
 | 0x04 | `OW_WRITE_BYTES` | `data[1..32]` | - |
 | 0x05 | `OW_READ_BYTES` | `n` (data[0], 1..32) | `data[n]` |
-| 0x06 | `OW_MATCH_ROM` | `rom[8]` + payload (0..32) | - |
-| 0x07 | `OW_SKIP_ROM` | payload (1..32) | - |
-| 0x08 | `OW_READ_ROM` | - | `rom[8]` |
+| 0x06 | `OW_MATCH_ROM` | `rom[8]` + payload (0..32) | `present` |
+| 0x07 | `OW_SKIP_ROM` | payload (1..32) | `present` |
+| 0x08 | `OW_READ_ROM` | - | `rom[8]`, `present` |
 | 0x09 | `OW_SEARCH` | `cmd`, `family`, `max` | `count` |
 | 0x0A | `OW_SEARCH_ALM` | `max` | `count` |
 | 0x0B | `OW_SET_PULLUP` | `on/off` | - |
@@ -315,6 +315,14 @@ the host keeps polling the response until it becomes `OK` or an error.
 discards commands already queued behind it and returns `ABORTED` once the bus
 is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 
+`OW_MATCH_ROM`, `OW_SKIP_ROM` and `OW_READ_ROM` append a `present` byte taken
+from the reset that precedes the command. The command still answers `BR_OK`
+when no device answered; the flag tells the host whether the addressed device
+is still on the bus. `OW_READ_ROM` keeps the ROM in the first eight bytes and
+puts the flag at index 8. A missing device also increments `read_fail` in
+`STATS_GET`. Firmware before 1.2.0 returned no flag (and `OW_READ_ROM` had a
+length of 8).
+
 ### DS18B20
 
 | Code | Command | Parameters | Response |
@@ -322,9 +330,9 @@ is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
 | 0x20 | `TEMP_CONVERT` | `rom[8]`, or an empty payload for broadcast | `temp x 10` for an addressed device; conversion status in broadcast mode |
 | 0x21 | `TEMP_READ` | `rom[8]` | `temp x 10` |
 | 0x22 | `TEMP_READ_ALL` | - | `temp x 10`, one slot per cached DS18B20 |
-| 0x23 | `TEMP_SET_RES` | `rom[8]`, `bits` | - |
+| 0x23 | `TEMP_SET_RES` | `bits` (broadcast) or `rom[8]`, `bits` | - |
 | 0x24 | `TEMP_GET_RES` | `rom[8]` | `bits` |
-| 0x25 | `TEMP_SET_ALARM` | `rom[8]`, `th`, `tl` | - |
+| 0x25 | `TEMP_SET_ALARM` | `th`, `tl` (broadcast) or `rom[8]`, `th`, `tl` | - |
 | 0x26 | `TEMP_GET_ALARM` | `rom[8]` | `th`, `tl` |
 | 0x27 | `TEMP_COPY` | `rom[8]` | - |
 | 0x28 | `TEMP_RECALL` | `rom[8]` | - |
@@ -338,10 +346,19 @@ sensor has no valid reading: no answer, a scratchpad CRC failure, or no
 conversion since power-up. A failed sensor therefore keeps its place instead
 of shifting its neighbours, and `BR_OK` means the command completed, not that
 every sensor answered. Use `TEMP_READ` with a ROM when a per-device status
-code is needed. Devices of other families in the cache get no slot. Failed scratchpad reads
-also increment the `read_fail` counter in `STATS_GET`. Firmware
-before 1.1.0 dropped failed readings instead, which shortened the array and
-made the positions unreliable.
+code is needed. Devices of other families in the cache get no slot. Failed
+scratchpad reads also increment the `read_fail` counter in `STATS_GET`.
+Firmware before 1.1.0 dropped failed readings instead, which shortened the
+array and made the positions unreliable.
+
+`TEMP_SET_RES` and `TEMP_SET_ALARM` have a broadcast form: a payload of just
+`bits` (1 byte) or `th, tl` (2 bytes) writes the same scratchpad values to
+every DS18B20 using Skip ROM. This is how a host makes the fleet uniform
+before one broadcast conversion; `owbridge_scan.py` uses it. Only the
+scratchpad is written — use addressed `TEMP_COPY` per device to persist
+values in EEPROM. A broadcast `TEMP_COPY` is deliberately not offered: all
+devices copying to EEPROM at once would draw a large current on a
+parasite-powered bus. Firmware before 1.2.0 required a ROM for both commands.
 
 The cache itself only changes when the host asks: `OW_SEARCH`,
 `OW_SEARCH_ALM` and `OW_CLEAR_CACHE` replace or empty it, and a hot-plugged
@@ -392,16 +409,16 @@ Payload length (`len` in the frame, excluding `cmd` and `len` itself):
 | Length | Commands |
 |--------|----------|
 | 0 | `OW_RESET`, `OW_READ_BYTE`, `OW_READ_ROM`, `OW_GET_STATUS`, `OW_GET_COUNT`, `OW_CLEAR_CACHE`, `OW_ABORT`, `TEMP_READ_ALL`, `CONFIG_GET`, `FIRMWARE_VER`, `RESET`, `STATS_GET`, `STATS_RESET` |
-| 1 | `OW_WRITE_BYTE`, `OW_READ_BYTES`, `OW_SET_PULLUP`, `OW_SET_POWER` |
-| 2 | `OW_GET_DEVICES` |
+| 1 | `OW_WRITE_BYTE`, `OW_READ_BYTES`, `OW_SET_PULLUP`, `OW_SET_POWER`, `TEMP_SET_RES` (broadcast `bits`) |
+| 2 | `OW_GET_DEVICES`, `TEMP_SET_ALARM` (broadcast `th`, `tl`) |
 | 1..32 | `OW_WRITE_BYTES`, `OW_SKIP_ROM` |
 | 0..3 | `OW_SEARCH` |
 | 0..1 | `OW_SEARCH_ALM` |
 | 0 or 8 | `TEMP_CONVERT` (empty = broadcast, 8 = addressed) |
 | 8 | `TEMP_READ`, `TEMP_GET_RES`, `TEMP_GET_ALARM`, `TEMP_COPY`, `TEMP_RECALL`, `TEMP_DETECT_P`, `EEPROM_READ_S`, `IO_READ` |
 | 8..40 | `OW_MATCH_ROM` (8-byte ROM + up to 32 payload bytes) |
-| 9 | `TEMP_SET_RES`, `IO_WRITE` |
-| 10 | `TEMP_SET_ALARM`, `EEPROM_READ` |
+| 9 | `TEMP_SET_RES` (addressed), `IO_WRITE` |
+| 10 | `TEMP_SET_ALARM` (addressed), `EEPROM_READ` |
 | 10..17 | `EEPROM_WRITE` (ROM + address + 1..8 data bytes) |
 | 40 | `CONFIG_SET` |
 
@@ -411,7 +428,9 @@ Argument checks applied after the length range:
   nonzero first ROM byte; an all-zero ROM is `PARAM_ERROR`, not a silent
   fallback to broadcast;
 - `OW_READ_BYTES` accepts `n` in 1..32;
-- `TEMP_SET_RES` accepts 9..12 resolution bits;
+- `TEMP_SET_RES` accepts 9..12 resolution bits, in the addressed form at
+  `data[8]` and in the broadcast form at `data[0]`;
+- `TEMP_SET_ALARM` broadcast form needs both `th` and `tl`;
 - `EEPROM_READ` accepts a length byte in 1..8;
 - `OW_SET_PULLUP` and `OW_SET_POWER` accept 0 or 1;
 - `TEMP_CONVERT` accepts an empty payload or exactly 8 bytes with a nonzero

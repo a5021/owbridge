@@ -116,7 +116,7 @@ owbridge demo  addr 0x30  100k  C:\Windows\System32\CH341DLLA64.DLL
 
 Firmware
 --------
-  version            owbridge 1.1.0 (lib 3.1.3)
+  version            owbridge 1.2.0 (lib 3.1.3)
 
 Configuration (flash page 0x08007C00)
 -------------------------------------
@@ -223,6 +223,13 @@ multi-drop bus those reads collide, so the driver reports a CRC failure and the
 firmware maps the broadcast case to `OK`: the conversion itself did complete.
 The `TH/TL` values are whatever the devices currently hold; they differ because
 they were configured at different times.
+
+`TEMP_SET_RES` and `TEMP_SET_ALARM` also have a broadcast form: send only
+`bits` or `th, tl` to write the same scratchpad values to every sensor. The
+scan tool uses `TEMP_SET_RES` broadcast to make the fleet uniform before one
+conversion. The `readrom` scenario prints a presence flag from the reset that
+precedes `OW_READ_ROM`; the same flag is available in `OW_MATCH_ROM` and
+`OW_SKIP_ROM` responses. A missing device does not change the status code.
 
 ### `eeprom`
 
@@ -331,7 +338,7 @@ Bus load (5 s)
 ```text
 Self test
 ---------
-  PASS firmware version       owbridge 1.1.0 (lib 3.1.3)
+  PASS firmware version       owbridge 1.2.0 (lib 3.1.3)
   PASS config crc             ok
   PASS bus presence           present
   PASS search                 9 devices

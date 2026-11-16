@@ -50,6 +50,7 @@ typedef struct {
     uint8_t min_len;   /**< minimum payload length accepted for the command */
     uint8_t max_len;   /**< maximum payload length accepted for the command */
     uint8_t flags;     /**< BR_ARG_* semantic argument checks */
+    uint8_t bcast_len; /**< alternative broadcast payload length, 0 = none */
 } br_cmd_desc_t;
 
 /* Semantic checks applied after the length range. They cover the few payloads
@@ -62,7 +63,8 @@ typedef struct {
 #define BR_ARG_EEPROM_N   0x20u  /**< data[9] in 1..DS2431_READ_PASS */
 
 /* Keeps the descriptor initializers in field order. */
-#define BR_DESC(s, p, inst, mn, mx, fl) { (s), (p), (inst), (mn), (mx), (fl) }
+#define BR_DESC(s, p, inst, mn, mx, fl) { (s), (p), (inst), (mn), (mx), (fl), 0u }
+#define BR_DESC_BCAST(s, p, mn, mx, fl, bl) { (s), (p), 0u, (mn), (mx), (fl), (bl) }
 
 typedef struct {
     br_bus_state_t state;
@@ -143,15 +145,26 @@ static void latch_reject(uint8_t cmd, uint8_t status)
 
 static inline uint8_t desc_len_ok(const br_cmd_desc_t *d, uint8_t len)
 {
+    if (d->bcast_len != 0u && len == d->bcast_len) {
+        return 1u;
+    }
     return (len >= d->min_len && len <= d->max_len) ? 1u : 0u;
 }
 
 /* Only called after desc_len_ok(), so data[8]/data[9] are in range whenever
-   the corresponding flag is set. */
+   the corresponding flag is set on the addressed form. */
 static uint8_t desc_args_ok(const br_cmd_desc_t *d,
                             const uint8_t *data, uint8_t len)
 {
     if (d->flags == 0u) {
+        return 1u;
+    }
+    if (d->bcast_len != 0u && len == d->bcast_len) {
+        /* Broadcast form: no ROM, and the arguments start at data[0]. */
+        if ((d->flags & BR_ARG_RES_BITS) != 0u &&
+            (data[0] < DS18B20_RES_MIN || data[0] > DS18B20_RES_MAX)) {
+            return 0u;
+        }
         return 1u;
     }
     if ((d->flags & BR_ARG_ALL_OR_ROM) != 0u) {
@@ -414,6 +427,7 @@ static uint8_t poll_ow_read_bytes(br_response_t *resp)
 
 static uint8_t match_step;
 static uint8_t match_payload_len;
+static uint8_t match_present;
 static uint16_t match_reset_pulses[2];
 
 static void start_ow_match(const br_command_t *cmd)
@@ -434,6 +448,8 @@ static uint8_t poll_ow_match(br_response_t *resp)
         if (!onewire_bus_done()) {
             return 0u;
         }
+        /* Check the reset before the next operation overwrites its capture. */
+        match_present = onewire_present(match_reset_pulses, onewire_reset_captured());
         {
             uint8_t buf[9];
             buf[0] = ONEWIRE_MATCH_ROM;
@@ -462,12 +478,19 @@ static uint8_t poll_ow_match(br_response_t *resp)
         match_step = 3u;
         return 0u;
     default:
-        resp_simple(resp, BR_CMD_OW_MATCH_ROM, BR_OK);
+        if (!match_present) {
+            stats_count(BR_STAT_READ_FAIL);
+        }
+        resp->status = BR_OK;
+        resp->cmd = BR_CMD_OW_MATCH_ROM;
+        resp->len = 1u;
+        resp->data[0] = match_present;
         return 1u;
     }
 }
 
 static uint8_t skip_step;
+static uint8_t skip_present;
 static uint16_t skip_reset_pulses[2];
 
 static void start_ow_skip(const br_command_t *cmd)
@@ -484,6 +507,7 @@ static uint8_t poll_ow_skip(br_response_t *resp)
         if (!onewire_bus_done()) {
             return 0u;
         }
+        skip_present = onewire_present(skip_reset_pulses, onewire_reset_captured());
         encode_bytes(shared_pulse, shared_payload, bus.cmd.len);
         onewire_write_slots(shared_pulse, (uint16_t)bus.cmd.len * 8u);
         skip_step = 1u;
@@ -495,7 +519,13 @@ static uint8_t poll_ow_skip(br_response_t *resp)
         skip_step = 2u;
         return 0u;
     default:
-        resp_simple(resp, BR_CMD_OW_SKIP_ROM, BR_OK);
+        if (!skip_present) {
+            stats_count(BR_STAT_READ_FAIL);
+        }
+        resp->status = BR_OK;
+        resp->cmd = BR_CMD_OW_SKIP_ROM;
+        resp->len = 1u;
+        resp->data[0] = skip_present;
         return 1u;
     }
 }
@@ -503,6 +533,7 @@ static uint8_t poll_ow_skip(br_response_t *resp)
 /* --- OW_READ_ROM ---------------------------------------------------------- */
 
 static uint8_t read_rom_step;
+static uint8_t read_rom_present;
 static uint16_t read_rom_reset_pulses[2];
 
 static void start_ow_read_rom(const br_command_t *cmd)
@@ -519,6 +550,7 @@ static uint8_t poll_ow_read_rom(br_response_t *resp)
         if (!onewire_bus_done()) {
             return 0u;
         }
+        read_rom_present = onewire_present(read_rom_reset_pulses, onewire_reset_captured());
         {
             ow_pulse_t pulse[9];
             onewire_encode_byte(pulse, 0x33u);
@@ -539,9 +571,13 @@ static uint8_t poll_ow_read_rom(br_response_t *resp)
             return 0u;
         }
         onewire_decode_pulses(resp->data, shared_read, 8u);
+        if (!read_rom_present) {
+            stats_count(BR_STAT_READ_FAIL);
+        }
         resp->status = BR_OK;
         resp->cmd = BR_CMD_OW_READ_ROM;
-        resp->len = 8u;
+        resp->len = 9u;  /* ROM[8] followed by the presence flag */
+        resp->data[8] = read_rom_present;
         return 1u;
     default:
         resp_simple(resp, BR_CMD_OW_READ_ROM, BR_BUS_ERROR);
@@ -895,13 +931,14 @@ static uint8_t poll_temp_read_all(br_response_t *resp)
 
 static void start_temp_set_res(const br_command_t *cmd)
 {
-    if (cmd->len >= 8u && cmd->data[0] != 0u) {
-        ds18b20_select(cmd->data);
-    } else {
+    if (cmd->len == 1u) {
+        /* Broadcast form: [bits]. Skip ROM reaches every DS18B20 at once. */
         ds18b20_select(0);
+        ds18b20_set_resolution(cmd->data[0]);
+        return;
     }
-    uint8_t bits = (cmd->len > 8u) ? cmd->data[8] : DS18B20_RES_DEFAULT;
-    ds18b20_set_resolution(bits);
+    ds18b20_select(cmd->data);
+    ds18b20_set_resolution(cmd->data[8]);
 }
 
 static uint8_t poll_temp_set_res(br_response_t *resp)
@@ -939,14 +976,14 @@ static uint8_t poll_temp_get_res(br_response_t *resp)
 
 static void start_temp_set_alarm(const br_command_t *cmd)
 {
-    if (cmd->len >= 8u && cmd->data[0] != 0u) {
-        ds18b20_select(cmd->data);
-    } else {
+    if (cmd->len == 2u) {
+        /* Broadcast form: [th, tl]. */
         ds18b20_select(0);
+        ds18b20_set_alarm_thresholds(cmd->data[0], cmd->data[1]);
+        return;
     }
-    uint8_t th = (cmd->len > 8u) ? cmd->data[8] : 0u;
-    uint8_t tl = (cmd->len > 9u) ? cmd->data[9] : 0u;
-    ds18b20_set_alarm_thresholds(th, tl);
+    ds18b20_select(cmd->data);
+    ds18b20_set_alarm_thresholds(cmd->data[8], cmd->data[9]);
 }
 
 static uint8_t poll_temp_set_alarm(br_response_t *resp)
@@ -1383,9 +1420,9 @@ static const br_cmd_desc_t cmd_map[256] = {
     [BR_CMD_TEMP_CONVERT]   = BR_DESC(start_temp_convert,   poll_temp_convert,   0u,  0u,  8u, BR_ARG_ALL_OR_ROM),
     [BR_CMD_TEMP_READ]      = BR_DESC(start_temp_read,      poll_temp_read,      0u,  8u,  8u, BR_ARG_ROM),
     [BR_CMD_TEMP_READ_ALL]  = BR_DESC(start_temp_read_all,  poll_temp_read_all,  0u,  0u,  0u, 0u),
-    [BR_CMD_TEMP_SET_RES]   = BR_DESC(start_temp_set_res,   poll_temp_set_res,   0u,  9u,  9u, BR_ARG_ROM | BR_ARG_RES_BITS),
+    [BR_CMD_TEMP_SET_RES]   = BR_DESC_BCAST(start_temp_set_res, poll_temp_set_res, 9u, 9u, BR_ARG_ROM | BR_ARG_RES_BITS, 1u),
     [BR_CMD_TEMP_GET_RES]   = BR_DESC(start_temp_get_res,   poll_temp_get_res,   0u,  8u,  8u, BR_ARG_ROM),
-    [BR_CMD_TEMP_SET_ALARM] = BR_DESC(start_temp_set_alarm, poll_temp_set_alarm, 0u, 10u, 10u, BR_ARG_ROM),
+    [BR_CMD_TEMP_SET_ALARM] = BR_DESC_BCAST(start_temp_set_alarm, poll_temp_set_alarm, 10u, 10u, BR_ARG_ROM, 2u),
     [BR_CMD_TEMP_GET_ALARM] = BR_DESC(start_temp_get_alarm, poll_temp_get_alarm, 0u,  8u,  8u, BR_ARG_ROM),
     [BR_CMD_TEMP_COPY]      = BR_DESC(start_temp_copy,      poll_temp_copy,      0u,  8u,  8u, BR_ARG_ROM),
     [BR_CMD_TEMP_RECALL]    = BR_DESC(start_temp_recall,    poll_temp_recall,    0u,  8u,  8u, BR_ARG_ROM),

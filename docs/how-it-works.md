@@ -262,16 +262,16 @@ The ranges are grouped in the descriptor table:
 | Payload length | Commands |
 |----------------|----------|
 | 0 | reset, read byte/ROM, status, count, cache clear, abort, read-all, config/version/stats |
-| 1 | write byte, read bytes, pull-up, power |
-| 2 | get devices |
+| 1 | write byte, read bytes, pull-up, power, broadcast `TEMP_SET_RES` |
+| 2 | get devices, broadcast `TEMP_SET_ALARM` |
 | 1..32 | write bytes, skip ROM |
 | 0..3 | search |
 | 0..1 | alarm search |
 | 0 or 8 | `TEMP_CONVERT` (broadcast or addressed) |
 | 8 | `TEMP_READ`, `TEMP_GET_RES`, `TEMP_GET_ALARM`, `TEMP_COPY`, `TEMP_RECALL`, `TEMP_DETECT_P`, `EEPROM_READ_S`, `IO_READ` |
 | 8..40 | `OW_MATCH_ROM` |
-| 9 | `TEMP_SET_RES`, `IO_WRITE` |
-| 10 | `TEMP_SET_ALARM`, `EEPROM_READ` |
+| 9 | `TEMP_SET_RES` (addressed), `IO_WRITE` |
+| 10 | `TEMP_SET_ALARM` (addressed), `EEPROM_READ` |
 | 10..17 | `EEPROM_WRITE` |
 | 40 | `CONFIG_SET` |
 

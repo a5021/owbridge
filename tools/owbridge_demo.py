@@ -753,8 +753,14 @@ class Bridge:
             raise BridgeStatus(0x01, resp.status)
         return bool(resp.data[0]) if resp.data else False
 
-    def ow_read_rom(self) -> bytes:
-        return self.expect(0x08, timeout=5.0)
+    def ow_read_rom(self) -> tuple:
+        """Return ``(rom, present)``.
+
+        Firmware 1.2.0 appends a presence byte after the 8-byte ROM, so a
+        Read ROM on an empty bus is distinguishable from a ROM collision.
+        """
+        raw = self.expect(0x08, timeout=5.0)
+        return raw[:8], (bool(raw[8]) if len(raw) > 8 else False)
 
     def ow_write_byte(self, value: int) -> None:
         self.expect(0x02, bytes([value]), timeout=3.0)
@@ -837,12 +843,20 @@ class Bridge:
     def temp_set_res(self, rom: bytes, bits: int) -> None:
         self.expect(0x23, rom + bytes([bits]), timeout=10.0)
 
+    def temp_set_res_all(self, bits: int) -> Response:
+        """Broadcast Write Scratchpad: set the resolution on every DS18B20."""
+        return self.command(0x23, bytes([bits]), timeout=10.0)
+
     def temp_get_alarm(self, rom: bytes):
         raw = self.expect(0x26, rom, timeout=5.0)
         return signed_byte(raw[0]), signed_byte(raw[1])
 
     def temp_set_alarm(self, rom: bytes, th: int, tl: int) -> None:
         self.expect(0x25, rom + bytes([th & 0xFF, tl & 0xFF]), timeout=10.0)
+
+    def temp_set_alarm_all(self, th: int, tl: int) -> Response:
+        """Broadcast Write Scratchpad: set TH/TL on every DS18B20."""
+        return self.command(0x25, bytes([th & 0xFF, tl & 0xFF]), timeout=10.0)
 
     def temp_copy(self, rom: bytes) -> None:
         self.expect(0x27, rom, timeout=10.0)
@@ -997,17 +1011,21 @@ def sc_readrom(bridge: Bridge, out: Out, args) -> dict:
                  "answer 0x33 at the same time, so the bytes below are a collision "
                  "pattern, not a ROM" % len(cached))
 
-    rom = bridge.ow_read_rom()
+    rom, present = bridge.ow_read_rom()
     ok = rom_crc_ok(rom)
     out.kv("ROM", fmt_rom(rom))
     out.kv("family", "0x%02X %s" % (rom[0], family_name(rom[0])))
+    out.kv("presence", out.c.green("yes") if present else out.c.red("no"))
     out.kv("CRC-8", out.c.green("ok") if ok else out.c.red("bad"))
     out.kv("Dallas label", fmt_rom_dallas(rom))
+    if not present:
+        out.warn("the reset found no device: the bytes above are collision noise")
     if len(cached) == 1 and not ok:
         out.warn("the only cached device answered, but the READ ROM frame has a bad CRC")
     return {
         "rom": rom.hex(),
         "crc_ok": ok,
+        "present": present,
         "label": fmt_rom_dallas(rom),
         "cached_devices": len(cached),
     }

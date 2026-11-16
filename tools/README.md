@@ -28,6 +28,12 @@ with `0x8000` for a sensor that has no valid reading. All three tools use
 whose length does not match the cache (pre-1.1.0 firmware compacted failed
 reads, which made positions unreliable).
 
+From 1.2.0 the bridge also supports broadcast `TEMP_SET_RES` (one `bits` byte)
+and `TEMP_SET_ALARM` (`th`, `tl`) — `owbridge_scan.py` uses the former instead
+of hand-building a Skip ROM frame. `OW_MATCH_ROM`, `OW_SKIP_ROM` and
+`OW_READ_ROM` append a presence byte; `owbridge_demo.py` prints it for
+`readrom`, and the command still returns `OK` when no device answered.
+
 ## Host-only unit tests
 
 `python3 -m unittest -v test_host_helpers` checks the positional mapping,
