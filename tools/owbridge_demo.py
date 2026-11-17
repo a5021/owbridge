@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import os
 import statistics
 import sys
 import time
@@ -413,11 +414,60 @@ class Ch341I2C:
             self.trace(wbytes, data)
         return data
 
+    def stream(self, wbytes: bytes, rlen: int) -> bytes:
+        return self._stream(wbytes, rlen)
+
     def write(self, payload: bytes) -> None:
         self._stream(payload, 0)
 
     def read(self, length: int) -> bytes:
         return self._stream(b"", length)
+
+
+# --------------------------------------------------------------------------- #
+# Transport factory
+# --------------------------------------------------------------------------- #
+
+
+def load_f072_adapter():
+    """Import F072I2C from the sibling F072_CDC_ADAPTER project."""
+    import importlib.util
+    import os
+    paths = [os.environ.get("F072_ADAPTER_PATH"),
+             os.path.join(os.path.dirname(__file__), "..", "..", "F072_CDC_ADAPTER", "tools")]
+    for path in paths:
+        if not path:
+            continue
+        module_path = os.path.join(path, "f072_adapter.py")
+        if os.path.isfile(module_path):
+            spec = importlib.util.spec_from_file_location("f072_adapter", module_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise Ch341Error("f072_adapter.py not found; set F072_ADAPTER_PATH")
+
+
+def make_io(args, addr, trace=None):
+    """Create the selected transport. Keeps the Ch341I2C surface."""
+    adapter = getattr(args, "adapter", "ch341")
+    if adapter == "ch341":
+        return Ch341I2C(args.dll, speed=SPEEDS[args.speed], trace=trace)
+    if adapter == "f072":
+        module = load_f072_adapter()
+        port = getattr(args, "port", None) or os.environ.get("F072_PORT")
+        if not port:
+            raise Ch341Error("--port is required with --adapter f072")
+        def wrap(payload, data, cmd):
+            if trace:
+                trace(bytes(payload), b"", "TX", bytes(payload))
+                if data:
+                    trace(b"", bytes(data), "RX", bytes(data))
+        speed = SPEEDS[args.speed]
+        khz = {0: 20, 1: 100, 2: 400, 3: 400}[speed]
+        return module.F072I2C(port, address=addr, speed_khz=khz,
+                              turnaround_us=getattr(args, "turnaround_us", 15) or 15,
+                              trace=wrap)
+    raise Ch341Error("unknown adapter %r" % adapter)
 
 
 # --------------------------------------------------------------------------- #
@@ -503,7 +553,7 @@ class Bridge:
 
     def _rx(self, length: int) -> bytes:
         payload = bytes([(self.addr << 1) | 1])
-        data = self.io._stream(payload, length)
+        data = self.io.stream(payload, length)
         if self.trace:
             self.trace(payload, data, "RX", data)
         return data
@@ -1612,6 +1662,12 @@ def add_common(parser, suppress: bool):
         return argparse.SUPPRESS if suppress else value
 
     parser.add_argument("--addr", default=default("0x30"), help="I2C slave address (default 0x30)")
+    parser.add_argument("--adapter", default=default("ch341"), choices=("ch341", "f072"),
+                        help="I2C adapter (default ch341)")
+    parser.add_argument("--port", default=default(None),
+                        help="serial port for --adapter f072 (or F072_PORT)")
+    parser.add_argument("--turnaround-us", type=int, default=default(15),
+                        help="F072 STOP->START gap in microseconds (default 15)")
     parser.add_argument("--speed", default=default("100k"), choices=SPEED_CHOICES,
                         help="CH341A I2C clock (default 100k); 400k+ is not supported by the slave")
     parser.add_argument("--dll", default=default(DEFAULT_DLL), help="path to CH341DLLA64.DLL")
@@ -1694,7 +1750,7 @@ def main(argv=None) -> int:
                 print("  " + out.c.dim("RX %s" % rdata.hex(" ")))
 
     try:
-        with Ch341I2C(args.dll, speed=SPEEDS[args.speed]) as io:
+        with make_io(args, addr, trace) as io:
             gap_us = args.poll_gap
             if gap_us is None:
                 # Back-to-back by default: with the packed sampler and the
