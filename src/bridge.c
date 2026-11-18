@@ -1398,7 +1398,9 @@ static uint8_t poll_stats_reset(br_response_t *resp)
    more than a 2 KB table: the dispatcher becomes one shift and one load
    instead of a linear scan over 38 entries. Unused slots stay zero, checked
    through the non-null poll pointer. */
-static const br_cmd_desc_t cmd_map[256] = {
+/* Commands are contiguous from 0x00 up to BR_CMD_STATS_RESET (0x55). Keeping
+ * a 256-entry table wastes ~2.7 KB of flash on the 16 KB F030F4. */
+static const br_cmd_desc_t cmd_map[BR_CMD_STATS_RESET + 1u] = {
     [BR_CMD_OW_RESET]       = BR_DESC(start_ow_reset,       poll_ow_reset,       0u,  0u,  0u, 0u),
     [BR_CMD_OW_WRITE_BYTE]  = BR_DESC(start_ow_write_byte,  poll_ow_write_byte,  0u,  1u,  1u, 0u),
     [BR_CMD_OW_READ_BYTE]   = BR_DESC(start_ow_read_byte,   poll_ow_read_byte,   0u,  0u,  0u, 0u),
@@ -1445,6 +1447,7 @@ static const br_cmd_desc_t cmd_map[256] = {
 
 static inline const br_cmd_desc_t *find_desc(uint8_t cmd)
 {
+    if (cmd >= sizeof cmd_map / sizeof cmd_map[0]) return 0;
     const br_cmd_desc_t *d = &cmd_map[cmd];
     return (d->poll != 0) ? d : 0;
 }
