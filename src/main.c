@@ -111,6 +111,14 @@ int main(void)
             profile_start_check(1u, host_i2c_soft_busy());
 #endif
         } else {
+            /* Tight sampling loop: while a transaction is active, the outer
+             * loop overhead (tick, watchdog, branches) is a large part of the
+             * 5 us SCL half-period at 100 kHz. Spin on the sampler alone and
+             * only fall back to the outer loop periodically so the watchdog
+             * and the 50 ms safety valve still run. */
+            for (uint32_t spin = 0u; spin < 60000u && host_i2c_soft_busy(); spin++) {
+                host_i2c_soft_poll();
+            }
             /* The valve only needs millisecond resolution. On a fast 100 kHz
                transaction the loop runs several times per millisecond, so
                gate the edge bookkeeping on a new millisecond: the busy path
