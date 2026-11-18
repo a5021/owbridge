@@ -156,6 +156,11 @@ target_include_directories(owbridge PRIVATE
 # The bridge cache and the library device table must have the same size;
 # bridge.c enforces this at compile time.
 target_compile_definitions(owbridge PRIVATE OW_MAX_DEVICES=${OW_MAX_DEVICES})
+# The polled I2C sampler is the timing-critical path: -Os makes its loop too
+# slow for the 5 us half-period at 100 kHz. Keep it at -O2; the rest of the
+# firmware stays at -Os to fit the 16 KB flash.
+set_source_files_properties(src/host_i2c_soft.c PROPERTIES COMPILE_OPTIONS "-O2")
+
 # Flash is plentiful (31 KB code region), so the firmware - not the fetched
 # library - gets the hot-path options: aligned functions/loops and no
 # loop-to-memcpy conversion. The library keeps OW_OPT; its timing is
@@ -163,7 +168,6 @@ target_compile_definitions(owbridge PRIVATE OW_MAX_DEVICES=${OW_MAX_DEVICES})
 # Cortex-M0, so it is deliberately not used.
 target_compile_options(owbridge PRIVATE ${OW_OPT} -flto
     -ffunction-sections -fdata-sections
-    -falign-functions=4 -falign-loops=4
     # Keep the explicit word/4-byte loops in fast_copy(): GCC otherwise
     # recognises them as memcpy and calls the slow byte-wise libc routine.
     -fno-tree-loop-distribute-patterns)

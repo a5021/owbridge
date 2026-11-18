@@ -46,11 +46,10 @@ typedef enum {
 typedef struct {
     void (*start)(const br_command_t *cmd);
     uint8_t (*poll)(br_response_t *resp);
-    uint8_t instant;   /**< poll() completes on the first call (RAM-only) */
     uint8_t min_len;   /**< minimum payload length accepted for the command */
     uint8_t max_len;   /**< maximum payload length accepted for the command */
     uint8_t flags;     /**< BR_ARG_* semantic argument checks */
-    uint8_t bcast_len; /**< alternative broadcast payload length, 0 = none */
+    uint8_t instant_bcast; /**< bit7 = instant, bits0-6 = broadcast length */
 } br_cmd_desc_t;
 
 /* Semantic checks applied after the length range. They cover the few payloads
@@ -63,8 +62,10 @@ typedef struct {
 #define BR_ARG_EEPROM_N   0x20u  /**< data[9] in 1..DS2431_READ_PASS */
 
 /* Keeps the descriptor initializers in field order. */
-#define BR_DESC(s, p, inst, mn, mx, fl) { (s), (p), (inst), (mn), (mx), (fl), 0u }
-#define BR_DESC_BCAST(s, p, mn, mx, fl, bl) { (s), (p), 0u, (mn), (mx), (fl), (bl) }
+#define BR_DESC(s, p, inst, mn, mx, fl) \
+    { (s), (p), (mn), (mx), (fl), ((inst) ? 0x80u : 0u) }
+#define BR_DESC_BCAST(s, p, mn, mx, fl, bl) \
+    { (s), (p), (mn), (mx), (fl), ((bl) & 0x7Fu) }
 
 typedef struct {
     br_bus_state_t state;
@@ -145,7 +146,8 @@ static void latch_reject(uint8_t cmd, uint8_t status)
 
 static inline uint8_t desc_len_ok(const br_cmd_desc_t *d, uint8_t len)
 {
-    if (d->bcast_len != 0u && len == d->bcast_len) {
+    uint8_t bcast_len = d->instant_bcast & 0x7Fu;
+    if (bcast_len != 0u && len == bcast_len) {
         return 1u;
     }
     return (len >= d->min_len && len <= d->max_len) ? 1u : 0u;
@@ -159,7 +161,8 @@ static uint8_t desc_args_ok(const br_cmd_desc_t *d,
     if (d->flags == 0u) {
         return 1u;
     }
-    if (d->bcast_len != 0u && len == d->bcast_len) {
+    uint8_t bcast_len = d->instant_bcast & 0x7Fu;
+    if (bcast_len != 0u && len == bcast_len) {
         /* Broadcast form: no ROM, and the arguments start at data[0]. */
         if ((d->flags & BR_ARG_RES_BITS) != 0u &&
             (data[0] < DS18B20_RES_MIN || data[0] > DS18B20_RES_MAX)) {
@@ -234,7 +237,7 @@ static inline void bus_begin_command(const br_cmd_desc_t *desc, uint8_t cmd)
     bus.desc = desc;
     bus.state = BR_BUS_BUSY;
     desc->start(&bus.cmd);
-    if (desc->instant && desc->poll(&bus.resp)) {
+    if ((desc->instant_bcast & 0x80u) != 0u && desc->poll(&bus.resp)) {
         bus_finish_command();
     } else {
         resp_busy(cmd);
