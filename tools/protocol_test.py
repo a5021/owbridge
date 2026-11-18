@@ -743,12 +743,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Boundary and fuzz tests for per-command payload validation.")
     parser.add_argument("--addr", default="0x30", help="I2C slave address (default 0x30)")
-    parser.add_argument("--adapter", default="ch341", choices=("ch341", "f072"),
+    parser.add_argument("--adapter", default="ch341", choices=("ch341", "f103"),
                         help="I2C adapter (default ch341)")
     parser.add_argument("--port", default=None,
-                        help="serial port for --adapter f072 (or F072_PORT)")
+                        help="serial port for --adapter f103 (or F103_PORT)")
     parser.add_argument("--turnaround-us", type=int, default=15,
-                        help="F072 STOP->START gap in microseconds (default 15)")
+                        help="F103 STOP->START gap in microseconds (default 15)")
     parser.add_argument("--short-poll", choices=("auto", "on", "off"), default="auto",
                         help="poll one status byte while BUSY (default: on at 20k, off at 100k)")
     parser.add_argument("--speed", default="100k", choices=demo.SPEED_CHOICES,

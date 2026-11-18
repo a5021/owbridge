@@ -429,22 +429,22 @@ class Ch341I2C:
 # --------------------------------------------------------------------------- #
 
 
-def load_f072_adapter():
-    """Import F072I2C from the sibling F072_CDC_ADAPTER project."""
+def load_f103_adapter():
+    """Import F103I2C from the sibling F103_CDC_I2C project."""
     import importlib.util
     import os
-    paths = [os.environ.get("F072_ADAPTER_PATH"),
-             os.path.join(os.path.dirname(__file__), "..", "..", "F072_CDC_ADAPTER", "tools")]
+    paths = [os.environ.get("F103_ADAPTER_PATH"),
+             os.path.join(os.path.dirname(__file__), "..", "..", "F103_CDC_I2C", "tools")]
     for path in paths:
         if not path:
             continue
-        module_path = os.path.join(path, "f072_adapter.py")
+        module_path = os.path.join(path, "f103_adapter.py")
         if os.path.isfile(module_path):
-            spec = importlib.util.spec_from_file_location("f072_adapter", module_path)
+            spec = importlib.util.spec_from_file_location("f103_adapter", module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
-    raise Ch341Error("f072_adapter.py not found; set F072_ADAPTER_PATH")
+    raise Ch341Error("f103_adapter.py not found; set F103_ADAPTER_PATH")
 
 
 def make_io(args, addr, trace=None):
@@ -452,11 +452,11 @@ def make_io(args, addr, trace=None):
     adapter = getattr(args, "adapter", "ch341")
     if adapter == "ch341":
         return Ch341I2C(args.dll, speed=SPEEDS[args.speed], trace=trace)
-    if adapter == "f072":
-        module = load_f072_adapter()
-        port = getattr(args, "port", None) or os.environ.get("F072_PORT")
+    if adapter == "f103":
+        module = load_f103_adapter()
+        port = getattr(args, "port", None) or os.environ.get("F103_PORT")
         if not port:
-            raise Ch341Error("--port is required with --adapter f072")
+            raise Ch341Error("--port is required with --adapter f103")
         def wrap(payload, data, cmd):
             if trace:
                 trace(bytes(payload), b"", "TX", bytes(payload))
@@ -464,7 +464,7 @@ def make_io(args, addr, trace=None):
                     trace(b"", bytes(data), "RX", bytes(data))
         speed = SPEEDS[args.speed]
         khz = {0: 20, 1: 100, 2: 400, 3: 400}[speed]
-        return module.F072I2C(port, address=addr, speed_khz=khz,
+        return module.F103I2C(port, address=addr, speed_khz=khz,
                               turnaround_us=getattr(args, "turnaround_us", 15) or 15,
                               trace=wrap)
     raise Ch341Error("unknown adapter %r" % adapter)
@@ -1662,12 +1662,12 @@ def add_common(parser, suppress: bool):
         return argparse.SUPPRESS if suppress else value
 
     parser.add_argument("--addr", default=default("0x30"), help="I2C slave address (default 0x30)")
-    parser.add_argument("--adapter", default=default("ch341"), choices=("ch341", "f072"),
+    parser.add_argument("--adapter", default=default("ch341"), choices=("ch341", "f103"),
                         help="I2C adapter (default ch341)")
     parser.add_argument("--port", default=default(None),
-                        help="serial port for --adapter f072 (or F072_PORT)")
+                        help="serial port for --adapter f103 (or F103_PORT)")
     parser.add_argument("--turnaround-us", type=int, default=default(15),
-                        help="F072 STOP->START gap in microseconds (default 15)")
+                        help="F103 STOP->START gap in microseconds (default 15)")
     parser.add_argument("--speed", default=default("100k"), choices=SPEED_CHOICES,
                         help="CH341A I2C clock (default 100k); 400k+ is not supported by the slave")
     parser.add_argument("--dll", default=default(DEFAULT_DLL), help="path to CH341DLLA64.DLL")
