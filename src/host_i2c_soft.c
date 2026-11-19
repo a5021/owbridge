@@ -87,6 +87,10 @@ static uint32_t edge_count;
 
 static inline void i2c_start(void)
 {
+    /* A repeated START is not a command boundary here: the polled slave
+     * cannot execute a queued command and clock the following address bits
+     * at 100 kHz, so write+repeated-START+read is served as write/STOP/gap/
+     * read by the host. */
     state = I2C_ADDR;
     bit = 0u;
     shift = 0u;
@@ -113,7 +117,7 @@ static inline void i2c_stop(void)
     ack_phase = 0u;
 }
 
-static inline void __attribute__((optimize("O2"))) i2c_scl_rising(uint8_t sda)
+static inline void i2c_scl_rising(uint8_t sda)
 {
     switch (state) {
     case I2C_ADDR:
@@ -162,7 +166,7 @@ static inline void __attribute__((optimize("O2"))) i2c_scl_rising(uint8_t sda)
     }
 }
 
-static inline void __attribute__((optimize("O2"))) i2c_scl_falling(void)
+static inline void i2c_scl_falling(void)
 {
     switch (state) {
     case I2C_ADDR:
@@ -255,7 +259,7 @@ void host_i2c_soft_init(void)
 
 /* The polled I2C sampler must stay at -O2 for the 5 us half-period at
  * 100 kHz; the rest of the file remains -Os to fit the 16 KB flash. */
-void __attribute__((optimize("O2"))) host_i2c_soft_poll(void)
+void host_i2c_soft_poll(void)
 {
     uint32_t idr = GPIOA->IDR;
     uint8_t pair = (uint8_t)((idr >> SCL_PIN) & 3u);
