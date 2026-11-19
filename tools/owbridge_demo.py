@@ -254,6 +254,28 @@ def bcd_hex(data: bytes) -> str:
     return " ".join("%02X" % b for b in data)
 
 
+def enable_windows_ansi() -> bool:
+    """Turn on ENABLE_VIRTUAL_TERMINAL_PROCESSING for the legacy console.
+
+    cmd.exe does not interpret ANSI sequences unless the process asks for it;
+    without this the demo prints ESC codes literally. Returns False when the
+    console rejects the mode, so the caller can drop colours entirely.
+    """
+    if os.name != "nt":
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & 0x0004:  # already enabled
+            return True
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
 class Color:
     """Minimal ANSI palette that disables itself when not on a terminal."""
 
@@ -1278,7 +1300,7 @@ def sc_garland(bridge: Bridge, out: Out, args) -> dict:
                                     _sparkline(hist[rom], args.history),
                                     "--" if lo[rom] is None else "%.2f" % lo[rom],
                                     "--" if hi[rom] is None else "%.2f" % hi[rom]))
-                if args.clear:
+                if args.clear and out.c.enabled:
                     sys.stdout.write("\033[H\033[2J")
                 sys.stdout.write("\n".join(lines) + "\n")
                 sys.stdout.flush()
@@ -1852,7 +1874,8 @@ def main(argv=None) -> int:
         print("error: --addr must be a 7-bit address (0x08..0x77)", file=sys.stderr)
         return 2
 
-    color = sys.stdout.isatty() and not args.no_color and not args.json
+    ansi = enable_windows_ansi()
+    color = ansi and sys.stdout.isatty() and not args.no_color and not args.json
     out = Out(color=color, json_mode=args.json)
 
     trace = None

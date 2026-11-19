@@ -96,6 +96,10 @@ option remains usable for very long frames: the safety valve now waits for
 | `temp` | broadcast Convert T, `TEMP_READ_ALL`, then per-sensor resolution, TH/TL and parasite flag |
 | `watch` | repeated conversions in a live table until Ctrl+C (or `--count`) |
 | `garland` | live coloured view: one row per DS18B20 with a bar, trend sparkline and min/max (`--clear` redraws in place) |
+
+The demo enables ANSI/VT processing itself, so colours and `--clear` work in
+cmd.exe as well as Windows Terminal. If the console refuses VT, colours and
+in-place redraw are disabled automatically (no escape codes leak to the screen).
 | `eeprom` | 128-byte dump in 8-byte passes, range read, and read-modify-write of one 8-byte block |
 | `io` | DS2413 pin/latch read and optional latch write |
 | `raw` | any command byte with an arbitrary payload, decoded header and hex dump |
