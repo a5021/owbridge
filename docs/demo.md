@@ -95,6 +95,7 @@ option remains usable for very long frames: the safety valve now waits for
 | `readrom` | `0x33` read ROM, including the warning that it is only defined for a single-device bus |
 | `temp` | broadcast Convert T, `TEMP_READ_ALL`, then per-sensor resolution, TH/TL and parasite flag |
 | `watch` | repeated conversions in a live table until Ctrl+C (or `--count`) |
+| `garland` | live coloured view: one row per DS18B20 with a bar, trend sparkline and min/max (`--clear` redraws in place) |
 | `eeprom` | 128-byte dump in 8-byte passes, range read, and read-modify-write of one 8-byte block |
 | `io` | DS2413 pin/latch read and optional latch write |
 | `raw` | any command byte with an arbitrary payload, decoded header and hex dump |

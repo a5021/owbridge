@@ -1199,6 +1199,99 @@ def sc_watch(bridge: Bridge, out: Out, args) -> dict:
     return {"devices": [fmt_rom_dallas(rom) for rom in devices], "samples": history, "cycles": cycles}
 
 
+SPARK = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+
+
+def _sparkline(values, width):
+    vals = [v for v in values if v is not None][-width:]
+    if len(vals) < 2:
+        return " " * width
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 0.05:
+        hi = lo + 0.05
+    chars = []
+    for v in vals:
+        idx = int((v - lo) / (hi - lo) * (len(SPARK) - 1))
+        chars.append(SPARK[max(0, min(len(SPARK) - 1, idx))])
+    return "".join(chars).rjust(width)
+
+
+def _bar(value, lo=10.0, hi=40.0, width=18):
+    if value is None:
+        return "." * width
+    frac = max(0.0, min(1.0, (value - lo) / (hi - lo)))
+    n = int(round(frac * width))
+    return "#" * n + "." * (width - n)
+
+
+def _temp_colour(out, value):
+    if value is None:
+        return out.c.dim("  --  ")
+    text = "%6.2f" % value
+    if value >= 30.0:
+        return out.c.red(text)
+    if value >= 27.0:
+        return out.c.yellow(text)
+    if value >= 20.0:
+        return out.c.green(text)
+    return out.c.cyan(text)
+
+
+def sc_garland(bridge: Bridge, out: Out, args) -> dict:
+    """Live "garland": one row per DS18B20 with a bar, trend and min/max."""
+    devices = [rom for rom in find_devices(bridge, out) if rom[0] == 0x28]
+    if not devices:
+        out.error("no DS18B20 in the cache")
+        return {"devices": [], "error": "no DS18B20"}
+
+    hist = {rom: [] for rom in devices}
+    lo = {rom: None for rom in devices}
+    hi = {rom: None for rom in devices}
+    cycles = 0
+    try:
+        while args.count == 0 or cycles < args.count:
+            cycles += 1
+            stats = bridge.stats_get()
+            bridge.temp_convert()
+            readings = bridge.temp_read_all()
+            pairs = pair_temperatures(devices, readings)
+            values = [None if word is None else round(decode_temp(word), 2)
+                      for _rom, word in pairs]
+            for rom, value in zip(devices, values):
+                hist[rom].append(value)
+                if value is not None:
+                    lo[rom] = value if lo[rom] is None else min(lo[rom], value)
+                    hi[rom] = value if hi[rom] is None else max(hi[rom], value)
+
+            if not out.json_mode:
+                lines = []
+                lines.append(out.c.bold(
+                    "  1-Wire garland   %s   uptime %ds   %d sensor(s)"
+                    % (time.strftime("%H:%M:%S"), stats["uptime_s"], len(devices))))
+                lines.append(out.c.dim(
+                    "  #  ROM              temp             bar              trend  "
+                    "                   min    max"))
+                for index, (rom, value) in enumerate(zip(devices, values), 1):
+                    lines.append("  %2d  %-15s %s  %s %s  %6s %6s"
+                                 % (index, fmt_rom_dallas(rom),
+                                    _temp_colour(out, value), _bar(value),
+                                    _sparkline(hist[rom], args.history),
+                                    "--" if lo[rom] is None else "%.2f" % lo[rom],
+                                    "--" if hi[rom] is None else "%.2f" % hi[rom]))
+                if args.clear:
+                    sys.stdout.write("\033[H\033[2J")
+                sys.stdout.write("\n".join(lines) + "\n")
+                sys.stdout.flush()
+
+            if args.count and cycles >= args.count:
+                break
+            time.sleep(max(0.0, args.interval))
+    except KeyboardInterrupt:
+        if not out.json_mode:
+            print(out.c.dim("\n  stopped"))
+    return {"devices": [fmt_rom_dallas(rom) for rom in devices], "cycles": cycles}
+
+
 def sc_eeprom(bridge: Bridge, out: Out, args) -> dict:
     roms = [rom for rom in find_devices(bridge, out) if rom[0] == 0x2D]
     if not roms:
@@ -1720,6 +1813,11 @@ def build_parser():
     p = add("watch", sc_watch, "live temperature table until Ctrl+C")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between samples (default 1.0)")
     p.add_argument("--count", type=int, default=0, help="stop after N samples (0 = forever)")
+    p = add("garland", sc_garland, "live coloured garland: bars, trend and min/max per sensor")
+    p.add_argument("--interval", type=float, default=1.0, help="seconds between samples (default 1.0)")
+    p.add_argument("--count", type=int, default=0, help="stop after N samples (0 = forever)")
+    p.add_argument("--history", type=int, default=24, help="trend width in samples (default 24)")
+    p.add_argument("--clear", action="store_true", help="redraw in place instead of scrolling")
     p = add("eeprom", sc_eeprom, "dump, read or write the DS2431 EEPROM")
     p.add_argument("--dump", action="store_true", help="dump all 128 bytes (default)")
     p.add_argument("--read", metavar="ADDR:LEN", help="read a range, e.g. 0x10:8")
