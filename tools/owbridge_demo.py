@@ -1541,7 +1541,23 @@ def sc_timing(bridge: Bridge, out: Out, args) -> dict:
 def sc_load(bridge: Bridge, out: Out, args) -> dict:
     """Saturate the bus with write + 163-byte reads, like the stress harness."""
     out.title("Bus load (%d s)" % args.seconds)
-    version = bridge.firmware_ver().encode("ascii", "replace")
+
+    def attempt(what, tries=3):
+        # The polled slave NACKs address/data while a command is completing;
+        # the host contract is to clear the bus and retry, not to abort the run.
+        for i in range(tries):
+            try:
+                return what()
+            except Exception:
+                if i == tries - 1:
+                    raise
+                try:
+                    bridge.io.bus_clear()
+                except Exception:
+                    pass
+                time.sleep(0.01)
+
+    version = attempt(lambda: bridge.firmware_ver()).encode("ascii", "replace")
     ver = bytes([0x00, 0x52, len(version)]) + version
     read_len = 163
     rounds = 0
@@ -1554,8 +1570,8 @@ def sc_load(bridge: Bridge, out: Out, args) -> dict:
         # command once instead of recording a bad response.
         raw = b""
         for _attempt in range(2):
-            bridge._tx(bytes([0x52, 0x00]))
-            raw = bridge._rx(read_len)
+            attempt(lambda: bridge._tx(bytes([0x52, 0x00])))
+            raw = attempt(lambda: bridge._rx(read_len))
             if raw[:len(ver)] == ver:
                 break
         if raw[:len(ver)] != ver or raw[len(ver):] != b"\xff" * (read_len - len(ver)):

@@ -21,3 +21,7 @@ build-*/
 # Python
 __pycache__/
 *.pyc
+
+# Local tooling state
+.codegraph/
+.projectmem/
