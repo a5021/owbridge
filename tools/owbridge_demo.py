@@ -1238,6 +1238,13 @@ def _sparkline(values, width):
     return "".join(chars).rjust(width)
 
 
+def _label(text, width, shift=0):
+    """Centre a heading in a field of `width` characters, optionally shifted."""
+    pad = (width - len(text)) // 2 + shift
+    pad = max(0, min(width - len(text), pad))
+    return " " * pad + text + " " * (width - pad - len(text))
+
+
 def _bar(value, lo=10.0, hi=40.0, width=18):
     if value is None:
         return "." * width
@@ -1292,10 +1299,10 @@ def sc_garland(bridge: Bridge, out: Out, args) -> dict:
                     % (time.strftime("%H:%M:%S"), stats["uptime_s"], len(devices))))
                 lines.append(out.c.dim(
                     ("  %2s  %-17s  %6s  %-18s  %*s  %6s  %6s"
-                     % ("#", "ROM".center(17), "temp".center(6),
-                        "bar".center(18), args.history,
-                        "trend".center(args.history), "min".center(6),
-                        "max".center(6)))))
+                     % ("#", _label("ROM", 17), _label("temp", 6),
+                        _label("bar", 18), args.history,
+                        _label("trend", args.history),
+                        _label("min", 6, 1), _label("max", 6, 1)))))
                 for index, (rom, value) in enumerate(zip(devices, values), 1):
                     lines.append("  %2d  %-17s  %s  %s  %s  %6s  %6s"
                                  % (index, fmt_rom_dallas(rom),
