@@ -1292,7 +1292,8 @@ def sc_garland(bridge: Bridge, out: Out, args) -> dict:
                     % (time.strftime("%H:%M:%S"), stats["uptime_s"], len(devices))))
                 lines.append(out.c.dim(
                     ("  %2s  %-17s  %6s  %-18s  %*s"
-                     % ("#", "ROM", "temp", "bar", args.history, "trend"))
+                     % ("#", "ROM".center(17), "temp", "bar", args.history,
+                        "trend"))
                     + "  " + " min  " + "  " + " max  "))
                 for index, (rom, value) in enumerate(zip(devices, values), 1):
                     lines.append("  %2d  %-17s  %s  %s  %s  %6s  %6s"
