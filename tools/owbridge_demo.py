@@ -1291,10 +1291,11 @@ def sc_garland(bridge: Bridge, out: Out, args) -> dict:
                     "  1-Wire garland   %s   uptime %ds   %d sensor(s)"
                     % (time.strftime("%H:%M:%S"), stats["uptime_s"], len(devices))))
                 lines.append(out.c.dim(
-                    ("  %2s  %-17s  %6s  %-18s  %*s"
-                     % ("#", "ROM".center(17), "temp", "bar", args.history,
-                        "trend"))
-                    + "  " + " min  " + "  " + " max  "))
+                    ("  %2s  %-17s  %6s  %-18s  %*s  %6s  %6s"
+                     % ("#", "ROM".center(17), "temp".center(6),
+                        "bar".center(18), args.history,
+                        "trend".center(args.history), "min".center(6),
+                        "max".center(6)))))
                 for index, (rom, value) in enumerate(zip(devices, values), 1):
                     lines.append("  %2d  %-17s  %s  %s  %s  %6s  %6s"
                                  % (index, fmt_rom_dallas(rom),
