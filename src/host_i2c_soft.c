@@ -258,7 +258,7 @@ void host_i2c_soft_init(void)
 }
 
 /* The polled I2C sampler must stay at -O2 for the 5 us half-period at
- * 100 kHz; the rest of the file remains -Os to fit the 16 KB flash. */
+ * 100 kHz; the rest of the file remains -Os to keep the image small. */
 void host_i2c_soft_poll(void)
 {
     uint32_t idr = GPIOA->IDR;

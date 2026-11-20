@@ -418,7 +418,7 @@ static void at_submit(uint8_t cmd)
         frame[1] = 3u;
         frame[2] = 0xF0u;
         frame[3] = 0x00u;
-        frame[4] = 16u;
+        frame[4] = (uint8_t)BR_CACHE_MAX;
         len = 5u;
         break;
     case AT_OWCNT:
@@ -447,12 +447,16 @@ static void at_submit(uint8_t cmd)
     default:
         return;
     }
-    /* Arm the AT state before submitting: bridge_submit() can latch a
-       QUEUE_FULL response synchronously, and that reply must be rendered by
-       push_at_response() rather than sent as a binary frame. */
+    /* Arm the AT state before submitting. A rejected frame latches its own
+       response; a frame dropped because both queue slots are full has no
+       response at all, so report ERROR here instead of leaving at_active set
+       and risking that the running command's reply is taken for ours. */
     at_cmd = cmd;
     at_active = 1u;
-    bridge_submit(frame, len);
+    if (bridge_submit(frame, len) == 0u) {
+        at_active = 0u;
+        reply_push(AT_REPLY_ERROR);
+    }
 }
 
 /* --- Binary RX decoder ---------------------------------------------------- */

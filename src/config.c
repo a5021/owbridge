@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "cache.h"
+#include "board.h"
 
 #include "stm32f0xx.h"
 
@@ -57,6 +58,10 @@ static void flash_lock(void)
 static uint8_t flash_wait(void)
 {
     while (FLASH->SR & FLASH_SR_BSY) {
+        /* The main loop is blocked here for ~23 ms during a page erase or
+           program. Poll the millisecond tick so the polled timebase does not
+           lose those ticks (uptime and the host-link timeouts use it). */
+        (void)board_millis();
     }
     uint32_t errors = FLASH->SR & (FLASH_SR_PGERR | FLASH_SR_WRPRTERR);
     if (errors != 0u) {

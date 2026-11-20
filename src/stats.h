@@ -19,9 +19,11 @@ enum {
     BR_STAT_BUS_SHORT,
     BR_STAT_TIMEOUT,
     BR_STAT_COMMANDS,
-    BR_STAT_ABORTS,
-    /* A scratchpad/MATCH ROM read that failed (no answer or bad CRC), from
-       TEMP_READ and TEMP_READ_ALL. Kept separate from PRESENCE_FAIL, which
+    BR_STAT_ABORTS,       /* executed OW_ABORT commands */
+    /* A scratchpad/ROM read that failed (no answer, bad CRC, or no presence
+       for MATCH/SKIP/READ_ROM), from TEMP_READ, TEMP_READ_ALL,
+       TEMP_GET_RES, TEMP_GET_ALARM, TEMP_DETECT_P, OW_MATCH_ROM,
+       OW_SKIP_ROM and OW_READ_ROM. Kept separate from PRESENCE_FAIL, which
        counts an absent device on OW_RESET. */
     BR_STAT_READ_FAIL,
     /* A frame submitted while both queue slots were occupied. The frame is

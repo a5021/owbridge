@@ -724,6 +724,9 @@ def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
         count = bridge.ow_search(0xF0, 0, demo.CACHE_PROBE_MAX)
         devices = demo.read_all_devices(bridge, count)
         temps = bridge.temp_read_all()
+        aborts_before = bridge.stats_get()["aborts"]
+        abort = send(bridge, bytes([0x11, 0]))
+        aborts_after = bridge.stats_get()["aborts"]
         stats = bridge.stats_get()
     except (BridgeError, BridgeStatus, BridgeTimeout) as exc:
         report.check("verify", "final health check", False, str(exc))
@@ -731,6 +734,11 @@ def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
     report.check("verify", "firmware answers", bool(version),
                  version if isinstance(version, str) else repr(version))
     report.check("verify", "bus has presence", bool(present))
+    report.check("verify", "OW_ABORT arrives and is counted",
+                 abort.status == demo.BR_ABORTED
+                 and aborts_after == aborts_before + 1,
+                 "%s aborts %d -> %d"
+                 % (abort.status_name, aborts_before, aborts_after))
     report.check("verify", "device count unchanged",
                  count == ctx["device_count"] and len(devices) == count,
                  "search=%d cached=%d baseline=%d"

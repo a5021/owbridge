@@ -241,6 +241,11 @@ static void board_tick_init(void)
 
 uint32_t board_millis(void)
 {
+    /* SysTick COUNTFLAG is a single sticky bit: if a caller blocks for more
+       than one period without polling, the missed ticks are lost. The only
+       long blocking path in this firmware is a flash erase/program, and
+       config.c polls this function inside flash_wait() to keep the count
+       exact. Any new long wait must do the same. */
     if (SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk) {
         (void)SysTick->CTRL; /* read clears COUNTFLAG */
         ms_count++;

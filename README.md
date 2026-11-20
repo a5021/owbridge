@@ -279,7 +279,7 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.5.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.6.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
@@ -373,12 +373,15 @@ caches are read in pages with `offset` and `count`, and `AT+DEVS` prints the
 first 20.
 
 `OW_MATCH_ROM`, `OW_SKIP_ROM` and `OW_READ_ROM` append a `present` byte taken
-from the reset that precedes the command. The command still answers `BR_OK`
-when no device answered; the flag tells the host whether the addressed device
-is still on the bus. `OW_READ_ROM` keeps the ROM in the first eight bytes and
-puts the flag at index 8. A missing device also increments `read_fail` in
-`STATS_GET`. Firmware before 1.2.0 returned no flag (and `OW_READ_ROM` had a
-length of 8).
+from the reset that precedes the command. It means **at least one device
+answered the reset pulse** — it is not proof that the addressed ROM exists,
+because MATCH ROM and SKIP ROM are write-only and a non-matching device sends
+no response. The command still answers `BR_OK` when the bus is empty; the flag
+tells the host whether the bus had any device at all. `OW_READ_ROM` keeps the
+ROM in the first eight bytes and puts the flag at index 8. A missing bus also
+increments `read_fail` in `STATS_GET`. Firmware before 1.2.0 returned no flag
+(and `OW_READ_ROM` had a length of 8). Use `TEMP_READ` or `TEMP_GET_*` when a
+per-device answer is required.
 
 ### DS18B20
 
@@ -400,6 +403,15 @@ The three scratchpad readers (`0x24`, `0x26`, `0x29`) need the same read as
 instead of `OK` with zeros: a zero `DETECT_P` result would otherwise look like
 "externally powered" and could make a host drop the strong pull-up on a
 parasite bus. Each failure also increments `read_fail`.
+
+The write-only DS18B20 commands (`TEMP_SET_RES`, `TEMP_SET_ALARM`,
+`TEMP_COPY`, `TEMP_RECALL`) cannot prove that a specific addressed ROM
+responded: MATCH ROM is not acknowledged by the device. They answer `OK` when
+at least one device was present on the bus. `TEMP_SET_RES` additionally reports
+`BUS_ERROR` when a changed resolution did not take effect, and
+`TEMP_SET_ALARM`/`TEMP_COPY`/`TEMP_RECALL` report `BUS_ERROR` when the bus had
+no presence at all. Use a read-back (`TEMP_GET_RES`, `TEMP_GET_ALARM`,
+`TEMP_READ`) when the host must verify the addressed device.
 
 `TEMP_READ_ALL` answers with one fixed 2-byte slot per **cached DS18B20**, in
 cache order (the order in which `OW_GET_DEVICES` returns the `0x28` entries),
@@ -480,12 +492,12 @@ empty payload, so the previous operation's bytes are never returned.
 `STATS_GET` returns nine big-endian u32 counters followed by uptime (seconds):
 `resets`, `presence_fail`, `crc_error`, `bus_short`, `timeout`, `commands`,
 `aborts`, `read_fail`, `queue_drop`. `presence_fail` counts a missing device on
-`OW_RESET`; `read_fail` counts a failed DS18B20 scratchpad read (no answer or
-bad CRC) in `TEMP_READ`, `TEMP_READ_ALL` and the scratchpad readers;
-`queue_drop` counts a frame dropped because both queue slots were full.
-`bus_short` and `timeout` are reserved and stay 0: the board has no bus-current
-sensor and the bridge has no command deadline. The host tools decode every
-counter by name.
+`OW_RESET`; `read_fail` counts a failed device access (no answer, bad CRC, or
+no presence) in the scratchpad readers, `OW_MATCH_ROM`, `OW_SKIP_ROM` and
+`OW_READ_ROM`; `aborts` counts executed `OW_ABORT` commands; `queue_drop`
+counts a frame dropped because both queue slots were full. `bus_short` and
+`timeout` are reserved and stay 0: the board has no bus-current sensor and the
+bridge has no command deadline. The host tools decode every counter by name.
 
 ### Parameter validation
 
@@ -577,9 +589,9 @@ old ones.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 23 448 B | 2 944 B |
-| SPI | 20 276 B | 2 220 B |
-| I2C | 19 912 B | 2 076 B |
+| UART | 23 732 B | 2 936 B |
+| SPI | 20 292 B | 2 212 B |
+| I2C | 20 052 B | 2 068 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack: UART leaves about 1.1 KB below the 4 KB limit after its 512-byte RX

@@ -119,6 +119,10 @@ int main(void)
             for (uint32_t spin = 0u; spin < 60000u && host_i2c_soft_busy(); spin++) {
                 host_i2c_soft_poll();
             }
+            /* The spin can last tens of milliseconds. Re-read the tick so the
+               50 ms valve compares against the current time, not the value
+               sampled before the spin. */
+            now_ms = board_millis();
             /* The valve only needs millisecond resolution. On a fast 100 kHz
                transaction the loop runs several times per millisecond, so
                gate the edge bookkeeping on a new millisecond: the busy path

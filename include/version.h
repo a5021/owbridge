@@ -11,6 +11,6 @@
 #ifndef OWBRIDGE_VERSION_H
 #define OWBRIDGE_VERSION_H
 
-#define OWBRIDGE_VERSION "owbridge 1.5.0 (lib 3.1.3)"
+#define OWBRIDGE_VERSION "owbridge 1.6.0 (lib 3.1.3)"
 
 #endif /* OWBRIDGE_VERSION_H */

@@ -72,7 +72,6 @@ typedef struct {
     br_command_t cmd;
     br_response_t resp;
     const br_cmd_desc_t *desc;
-    uint8_t resp_valid;
 } br_bus_t;
 
 static br_bus_t bus;
@@ -86,11 +85,8 @@ static uint8_t pullup_hold;
 /* The frame starts one byte into the storage so that last_resp + 3 (the data
    area) is word-aligned: fast_copy() can then use 32-bit moves even though the
    header itself is byte-sized. */
-static union {
-    uint32_t align;
-    uint8_t bytes[4u + 3u + BR_MAX_RESP];
-} last_resp_store;
-#define last_resp (last_resp_store.bytes + 1u)
+static uint8_t last_resp_store[4u + 3u + BR_MAX_RESP] __attribute__((aligned(4)));
+#define last_resp (last_resp_store + 1u)
 
 static uint8_t last_resp_len;
 static uint8_t last_resp_seq;
@@ -824,6 +820,7 @@ static uint8_t poll_ow_abort(br_response_t *resp)
     /* The library has no abort for the in-flight hardware operation. This
        command runs after that operation has finished; bridge_submit() has
        already discarded anything that was queued behind it. */
+    stats_count(BR_STAT_ABORTS);
     resp_simple(resp, BR_CMD_OW_ABORT, BR_ABORTED);
     return 1u;
 }
@@ -991,8 +988,13 @@ static uint8_t poll_temp_read_all(br_response_t *resp)
 
 /* --- TEMP_SET_RES / TEMP_GET_RES ----------------------------------------- */
 
+static uint8_t set_res_bits;
+static uint8_t set_res_before;
+
 static void start_temp_set_res(const br_command_t *cmd)
 {
+    set_res_bits = (cmd->len == 1u) ? cmd->data[0] : cmd->data[8];
+    set_res_before = ds18b20_get_resolution();
     if (cmd->len == 1u) {
         /* Broadcast form: [bits]. Skip ROM reaches every DS18B20 at once. */
         ds18b20_select(0);
@@ -1007,6 +1009,16 @@ static uint8_t poll_temp_set_res(br_response_t *resp)
 {
     if (!ds18b20_set_resolution_poll()) {
         return 0u;
+    }
+    /* The driver keeps its previous resolution when no device answered the
+       reset. A changed resolution is therefore the available proof that the
+       write reached at least one device. When the requested value already
+       equals the current one the test cannot distinguish success from an
+       empty bus; that ambiguity is inherent to the driver API. */
+    if (set_res_bits != set_res_before &&
+        ds18b20_get_resolution() != set_res_bits) {
+        resp_simple(resp, BR_CMD_TEMP_SET_RES, BR_BUS_ERROR);
+        return 1u;
     }
     resp_simple(resp, BR_CMD_TEMP_SET_RES, BR_OK);
     return 1u;
@@ -1058,7 +1070,11 @@ static uint8_t poll_temp_set_alarm(br_response_t *resp)
     if (!ds18b20_set_alarm_thresholds_poll()) {
         return 0u;
     }
-    resp_simple(resp, BR_CMD_TEMP_SET_ALARM, BR_OK);
+    /* This reports a missing bus, not a missing addressed ROM: MATCH ROM is
+       write-only, so a device that did not match is indistinguishable from
+       one that accepted the write. See README for the addressed-write rule. */
+    resp_simple(resp, BR_CMD_TEMP_SET_ALARM,
+                ds18b20_last_command_ok() ? BR_OK : BR_BUS_ERROR);
     return 1u;
 }
 
@@ -1497,7 +1513,7 @@ static uint8_t poll_stats_reset(br_response_t *resp)
    instead of a linear scan over 38 entries. Unused slots stay zero, checked
    through the non-null poll pointer. */
 /* Commands are contiguous from 0x00 up to BR_CMD_STATS_RESET (0x55). Keeping
- * a 256-entry table wastes ~2.7 KB of flash on the 16 KB F030F4. */
+ * a 256-entry table wastes ~2.7 KB of flash. */
 static const br_cmd_desc_t cmd_map[BR_CMD_STATS_RESET + 1u] = {
     [BR_CMD_OW_RESET]       = BR_DESC(start_ow_reset,       poll_ow_reset,       0u,  0u,  0u, 0u),
     [BR_CMD_OW_WRITE_BYTE]  = BR_DESC(start_ow_write_byte,  poll_ow_write_byte,  0u,  1u,  1u, 0u),
@@ -1571,7 +1587,8 @@ static void bus_start_next(void)
     queue_count--;
 
     if (desc == 0 || src->len > BR_MAX_DATA ||
-        !desc_ok(desc, src->data, src->len)) {
+        !desc_ok(desc, src->data, src->len) ||
+        !desc_opcode_ok(cmd, src->data, src->len)) {
         latch_reject(cmd, (desc == 0) ? BR_INVALID_CMD : BR_PARAM_ERROR);
         bus.state = BR_BUS_DONE;
         return;

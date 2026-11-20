@@ -44,10 +44,11 @@ extern "C" {
  *
  * Every cached DS18B20 owns one 2-byte slot, in cache order, whether or not
  * its scratchpad could be read. A slot that stays at this value has no valid
- * temperature: the device did not answer, its scratchpad failed CRC, or no
- * conversion has been run since power-up. The signed range of a DS18B20
- * reading is -8800..+2000 (0.1 C units), so this value cannot collide with a
- * real measurement.
+ * temperature: the device did not answer or its scratchpad failed CRC. The
+ * value is a marker, not a power-on reading: a DS18B20 that has not converted
+ * yet returns +85.0 C, which the bridge cannot distinguish from a real
+ * measurement. The signed range of a DS18B20 reading is -550..+1250
+ * (0.1 C units), so this value cannot collide with a real measurement.
  */
 #define BR_TEMP_INVALID 0x8000
 
@@ -148,7 +149,10 @@ void bridge_poll(void);
  * @brief Submit a command frame
  * @param frame Pointer to [cmd][len][data...]
  * @param len   Total frame length (2 + data_len)
- * @return 1 if accepted (started or queued), 0 if the queue is full
+ * @return 1 when a response was latched or the frame was queued/started;
+ *         0 when nothing was latched (queue full or a frame shorter than two
+ *         bytes). A frame rejected by validation still returns 1 and latches
+ *         BR_PARAM_ERROR / BR_INVALID_CMD.
  */
 uint8_t bridge_submit(const uint8_t *frame, uint8_t len);
 

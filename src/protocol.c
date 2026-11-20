@@ -3,8 +3,8 @@
  * @brief Shared frame helpers - see protocol.h
  *
  * Bitwise Dallas/Maxim CRC-8 (polynomial 0x8C, reflected). The table-driven
- * version cost 256 bytes of flash; the 16 KB F030F4 needs those bytes for the
- * I2C slave built at -O2. CRC is not in the I2C sampling path.
+ * version cost 256 bytes of flash; the bitwise loop keeps the image small.
+ * CRC is not in the I2C sampling path.
  */
 
 #include "protocol.h"

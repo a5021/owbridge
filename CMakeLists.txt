@@ -22,13 +22,13 @@ project(owbridge C ASM)
 
 # Keep the explicit word/4-byte loops in the 1-Wire library from being folded
 # into byte-wise libc memcpy: applied to the fetched library as well, which
-# also recovers a few bytes of the 16 KB flash budget.
+# also recovers a few bytes of the code region.
 add_compile_options(-fno-tree-loop-distribute-patterns)
 # The single-call-site inliner costs flash without helping the hot sampler
-# loop (called thousands of times per transaction); it is what keeps the
-# image inside the 16 KB part.
+# loop (called thousands of times per transaction); it keeps the image small
+# without hurting the sampler.
 add_compile_options(-fno-inline-functions-called-once)
-# Last 4 bytes of the 16 KB budget: the command switches are cold; the hot
+# Last few bytes of the code budget: the command switches are cold; the hot
 # sampler is a short if/else chain and keeps its timing (verified at 100 kHz).
 add_compile_options(-fno-jump-tables)
 
@@ -173,9 +173,9 @@ target_include_directories(owbridge PRIVATE
 target_compile_definitions(owbridge PRIVATE OW_MAX_DEVICES=${OW_MAX_DEVICES})
 # The polled I2C sampler is the timing-critical path: -Os makes its loop too
 # slow for the 5 us half-period at 100 kHz. Keep it at -O2; the rest of the
-# firmware stays at -Os to fit the 16 KB flash.
+# firmware stays at -Os to keep the image small.
 set_source_files_properties(src/host_i2c_soft.c PROPERTIES COMPILE_OPTIONS "-O2")
-# Not on any timing-critical path: squeezing these keeps the image under 16 KB.
+# Not on any timing-critical path: squeezing these keeps the image small.
 set_source_files_properties(src/protocol.c src/config.c PROPERTIES COMPILE_OPTIONS "-Oz")
 
 # Flash is plentiful (31 KB code region), so the firmware - not the fetched

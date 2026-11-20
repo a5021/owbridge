@@ -56,7 +56,7 @@ static inline volatile uint8_t *spi_dr(void)
    clock can be lost. */
 static void spi_fifo_reset(void)
 {
-    SPI1->CR1 &= (uint16_t)~SPI_CR1_SPE;
+    SPI1->CR1 &= ~SPI_CR1_SPE;
     SPI1->CR1 |= SPI_CR1_SPE;
 }
 
@@ -147,9 +147,12 @@ void host_spi_init(void)
 {
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
 
-    /* Slave, software slave select, 8-bit data, mode 0. */
-    SPI1->CR1 = SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_SPE;
+    /* Slave, software slave select, 8-bit data, mode 0. With SSM=1 the SSI
+       bit is the internal NSS level, and a slave is selected when it is low;
+       SSI=1 would leave the peripheral deselected and it would never shift a
+       byte. Configure the data size before enabling the peripheral. */
     SPI1->CR2 = SPI_CR2_FRXTH | SPI_CR2_DS_2 | SPI_CR2_DS_1 | SPI_CR2_DS_0;
+    SPI1->CR1 = SPI_CR1_SSM | SPI_CR1_SPE;
 
     phase = SPI_PHASE_CMD;
     cs_prev = (GPIOA->IDR & (1u << 4)) ? 1u : 0u;
