@@ -482,8 +482,10 @@ empty payload, so the previous operation's bytes are never returned.
 `aborts`, `read_fail`, `queue_drop`. `presence_fail` counts a missing device on
 `OW_RESET`; `read_fail` counts a failed DS18B20 scratchpad read (no answer or
 bad CRC) in `TEMP_READ`, `TEMP_READ_ALL` and the scratchpad readers;
-`queue_drop` counts a frame dropped because both queue slots were full. The
-host tools decode all of them by name.
+`queue_drop` counts a frame dropped because both queue slots were full.
+`bus_short` and `timeout` are reserved and stay 0: the board has no bus-current
+sensor and the bridge has no command deadline. The host tools decode every
+counter by name.
 
 ### Parameter validation
 
