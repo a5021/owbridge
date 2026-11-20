@@ -76,7 +76,7 @@ def selftest_ok(data):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="COM6")
+    ap.add_argument("--port", default="auto")
     ap.add_argument("--addr", default="0x30")
     ap.add_argument("--seconds", type=int, default=1800)
     ap.add_argument("--load-seconds", type=int, default=20)

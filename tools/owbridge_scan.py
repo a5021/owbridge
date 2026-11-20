@@ -248,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adapter", default="ch341", choices=("ch341", "f103"),
                         help="I2C adapter (default ch341)")
     parser.add_argument("--port", default=None,
-                        help="serial port for --adapter f103 (or F103_PORT)")
+                        help="serial port for --adapter f103, \"auto\" to probe (or F103_PORT)")
     parser.add_argument("--turnaround-us", type=int, default=15,
                         help="F103 STOP->START gap in microseconds (default 15)")
     parser.add_argument("--speed", default="100k", choices=demo.SPEED_CHOICES,

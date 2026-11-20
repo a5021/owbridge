@@ -476,9 +476,8 @@ def make_io(args, addr, trace=None):
         return Ch341I2C(args.dll, speed=SPEEDS[args.speed], trace=trace)
     if adapter == "f103":
         module = load_f103_adapter()
-        port = getattr(args, "port", None) or os.environ.get("F103_PORT")
-        if not port:
-            raise Ch341Error("--port is required with --adapter f103")
+        port = (getattr(args, "port", None) or os.environ.get("F103_PORT")
+                or "auto")
         def wrap(payload, data, cmd):
             if trace:
                 trace(bytes(payload), b"", "TX", bytes(payload))
@@ -1806,7 +1805,7 @@ def add_common(parser, suppress: bool):
     parser.add_argument("--adapter", default=default("ch341"), choices=("ch341", "f103"),
                         help="I2C adapter (default ch341)")
     parser.add_argument("--port", default=default(None),
-                        help="serial port for --adapter f103 (or F103_PORT)")
+                        help="serial port for --adapter f103, \"auto\" to probe (or F103_PORT)")
     parser.add_argument("--turnaround-us", type=int, default=default(15),
                         help="F103 STOP->START gap in microseconds (default 15)")
     parser.add_argument("--speed", default=default("100k"), choices=SPEED_CHOICES,
