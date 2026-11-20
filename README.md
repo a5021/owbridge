@@ -279,7 +279,7 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.4.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.5.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
@@ -300,7 +300,7 @@ an AT command is `BUSY`, or the reply will be rendered in the wrong format
 | 0x01 | BUSY | command in progress; poll again |
 | 0x02 | NO_DEVICE | no presence pulse |
 | 0x03 | CRC_ERROR | checksum mismatch |
-| 0x04 | BUS_SHORT | bus short circuit |
+| 0x04 | BUS_SHORT | reserved; never returned (no current sensor) |
 | 0x05 | TIMEOUT | operation timed out |
 | 0x06 | INVALID_CMD | unknown command |
 | 0x07 | PARAM_ERROR | invalid parameters (payload length or argument) |
@@ -346,6 +346,15 @@ pipelines more than two commands must keep a timeout for the dropped one.
 `OW_ABORT` cannot interrupt the library's in-flight hardware operation: it
 discards commands already queued behind it and returns `ABORTED` once the bus
 is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
+
+`OW_SEARCH` accepts only the two 1-Wire search opcodes: `0xF0` (Search ROM) and
+`0xEC` (Alarm Search). Any other `cmd` byte is rejected with `PARAM_ERROR`
+before the bus is touched, and the previous cache is left intact. Omitting the
+byte defaults to `0xF0`.
+
+The `short` byte in `OW_RESET` and the `BUS_SHORT` status are reserved: this
+board has no bus-current sensor, so a short cannot be detected. `short` is
+always 0 and `BUS_SHORT` (0x04) is never returned.
 
 `OW_GET_STATUS.flags` bits:
 
@@ -396,14 +405,21 @@ parasite bus. Each failure also increments `read_fail`.
 cache order (the order in which `OW_GET_DEVICES` returns the `0x28` entries),
 so its length is always `2 x` the number of DS18B20 entries in the cache. A
 slot stays at `0x8000` (`BR_TEMP_INVALID` in `include/bridge.h`) when that
-sensor has no valid reading: no answer, a scratchpad CRC failure, or no
-conversion since power-up. A failed sensor therefore keeps its place instead
-of shifting its neighbours, and `BR_OK` means the command completed, not that
-every sensor answered. Use `TEMP_READ` with a ROM when a per-device status
-code is needed. Devices of other families in the cache get no slot. Failed
-scratchpad reads also increment the `read_fail` counter in `STATS_GET`.
-Firmware before 1.1.0 dropped failed readings instead, which shortened the
-array and made the positions unreliable.
+sensor has no valid reading: no answer or a scratchpad CRC failure. A failed
+sensor therefore keeps its place instead of shifting its neighbours, and
+`BR_OK` means the command completed, not that every sensor answered. Use
+`TEMP_READ` with a ROM when a per-device status code is needed. Devices of
+other families in the cache get no slot. Failed scratchpad reads also
+increment the `read_fail` counter in `STATS_GET`. Firmware before 1.1.0
+dropped failed readings instead, which shortened the array and made the
+positions unreliable.
+
+A DS18B20 powers up with **+85.0 °C** (`0x0550`) in its scratchpad. The bridge
+does not keep per-device conversion history, so a read before the first
+`TEMP_CONVERT` returns +85.0 as an ordinary value, indistinguishable from a
+real 85.0 °C measurement. Issue a conversion before the first read when that
+matters; the bridge cannot label it invalid without also rejecting genuine
+85.0 °C readings.
 
 `TEMP_SET_RES` and `TEMP_SET_ALARM` have a broadcast form: a payload of just
 `bits` (1 byte) or `th, tl` (2 bytes) writes the same scratchpad values to
@@ -534,13 +550,34 @@ size is the compile-time `OW_MAX_DEVICES`), `led_enable`.
 powered devices, so the same image works on both bus types. The host can
 override it at runtime with `OW_SET_POWER`.
 
+`CONFIG_SET` validates the 40-byte block and its CRC-32, erases the page,
+programs it, and reads it back before replacing the RAM copy. A flash erase or
+program error (`PGERR`/`WRPRTERR`) or a failed read-back is reported as
+`BUS_ERROR`; the previous RAM configuration stays active.
+
+Fields take effect at different times:
+
+| Field | Applied |
+|-------|---------|
+| `i2c_addr` | at boot, in `host_i2c_soft_init()` |
+| `uart_baud` | at boot, in `host_uart_init()` |
+| `parasite` | at boot, in `bridge_init()`; `OW_SET_POWER` overrides it live |
+| `strong_pullup` | live, checked by `OW_SET_PULLUP` |
+| `led_enable` | live, checked on every LED update |
+| `timing` | stored only, informational |
+| `auto_search`, `max_devices` | reserved; the cache size is compile-time `OW_MAX_DEVICES` |
+
+Changing `i2c_addr` or `uart_baud` therefore needs a reboot before the new
+transport settings are used; the `CONFIG_SET` response itself is sent with the
+old ones.
+
 ## Resource usage
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 23 372 B | 2 944 B |
-| SPI | 20 204 B | 2 220 B |
-| I2C | 19 840 B | 2 076 B |
+| UART | 23 448 B | 2 944 B |
+| SPI | 20 276 B | 2 220 B |
+| I2C | 19 912 B | 2 076 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
 stack: UART leaves about 1.1 KB below the 4 KB limit after its 512-byte RX

@@ -54,36 +54,51 @@ static void flash_lock(void)
     FLASH->CR |= FLASH_CR_LOCK;
 }
 
-static void flash_wait(void)
+static uint8_t flash_wait(void)
 {
     while (FLASH->SR & FLASH_SR_BSY) {
     }
-}
-
-static void flash_erase_page(uint32_t addr)
-{
-    flash_unlock();
-    flash_wait();
-    FLASH->CR |= FLASH_CR_PER;
-    FLASH->AR = addr;
-    FLASH->CR |= FLASH_CR_STRT;
-    flash_wait();
-    FLASH->CR &= ~FLASH_CR_PER;
-    flash_lock();
-}
-
-static void flash_program(uint32_t addr, const uint8_t *data, uint16_t len)
-{
-    flash_unlock();
-    flash_wait();
-    FLASH->CR |= FLASH_CR_PG;
-    for (uint16_t i = 0u; i < len; i += 2u) {
-        uint16_t half = (uint16_t)data[i] | ((uint16_t)data[i + 1u] << 8);
-        *(__IO uint16_t *)(addr + i) = half;
-        flash_wait();
+    uint32_t errors = FLASH->SR & (FLASH_SR_PGERR | FLASH_SR_WRPRTERR);
+    if (errors != 0u) {
+        FLASH->SR = errors; /* rc_w1: writing 1 clears the error flags */
+        return 0u;
     }
-    FLASH->CR &= ~FLASH_CR_PG;
+    return 1u;
+}
+
+static uint8_t flash_erase_page(uint32_t addr)
+{
+    flash_unlock();
+    uint8_t ok = flash_wait();
+    if (ok != 0u) {
+        FLASH->CR |= FLASH_CR_PER;
+        FLASH->AR = addr;
+        FLASH->CR |= FLASH_CR_STRT;
+        ok = flash_wait();
+        FLASH->CR &= ~FLASH_CR_PER;
+    }
     flash_lock();
+    return ok;
+}
+
+static uint8_t flash_program(uint32_t addr, const uint8_t *data, uint16_t len)
+{
+    flash_unlock();
+    uint8_t ok = flash_wait();
+    if (ok != 0u) {
+        FLASH->CR |= FLASH_CR_PG;
+        for (uint16_t i = 0u; i < len; i += 2u) {
+            uint16_t half = (uint16_t)data[i] | ((uint16_t)data[i + 1u] << 8);
+            *(__IO uint16_t *)(addr + i) = half;
+            ok = flash_wait();
+            if (ok == 0u) {
+                break;
+            }
+        }
+        FLASH->CR &= ~FLASH_CR_PG;
+    }
+    flash_lock();
+    return ok;
 }
 
 /* --- Public API ----------------------------------------------------------- */
@@ -170,8 +185,12 @@ uint8_t config_set(const struct br_config *cfg)
     tmp.version = BR_CONFIG_VERSION;
     tmp.crc32 = config_crc32((const uint8_t *)&tmp, BR_CONFIG_SIZE - 4u);
 
-    flash_erase_page(CONFIG_ADDR);
-    flash_program(CONFIG_ADDR, (const uint8_t *)&tmp, BR_CONFIG_SIZE);
+    if (!flash_erase_page(CONFIG_ADDR)) {
+        return 0u;
+    }
+    if (!flash_program(CONFIG_ADDR, (const uint8_t *)&tmp, BR_CONFIG_SIZE)) {
+        return 0u;
+    }
     if (!config_valid((const struct br_config *)CONFIG_ADDR)) {
         return 0u;
     }

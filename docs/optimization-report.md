@@ -194,8 +194,8 @@ Controlled A/B on the I2C image with the same firmware source:
 The table-driven CRC-8, CRC-16 and codec remove 624 B net: the 112 B of tables
 are smaller than the loops they replace in the functions this image links.
 
-Current sizes (text / bss + data, firmware 1.4.0): UART 23 372 / 2 944,
-SPI 20 204 / 2 220, I2C 19 840 / 2 076.
+Current sizes (text / bss + data, firmware 1.5.0): UART 23 448 / 2 944,
+SPI 20 276 / 2 220, I2C 19 912 / 2 076.
 
 On the bench, after flashing the v3.1.3 build: `selftest` and `info` pass, the
 protocol suite passes 178/0/10 with `--fuzz 2000 --destructive` at 100 kHz and

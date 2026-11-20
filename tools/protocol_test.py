@@ -684,6 +684,16 @@ def phase_failures(report: Report, bridge: Bridge, ctx: dict) -> None:
 def phase_cache(report: Report, bridge: Bridge, ctx: dict) -> None:
     """A limited search must say that more devices exist."""
     group = "cache"
+
+    # An invalid search opcode must be rejected before the cache is cleared.
+    before = bridge.ow_get_count()
+    expect_reject(report, bridge, group, "OW_SEARCH cmd=0x00",
+                  bytes([0x09, 3, 0x00, 0, 16]))
+    after = bridge.ow_get_count()
+    report.check(group, "invalid search leaves the cache intact",
+                 before == after and before == ctx["device_count"],
+                 "%d -> %d" % (before, after))
+
     if ctx["device_count"] < 2:
         report.skip(group, "truncation flag", "fewer than two devices on the bench")
         return

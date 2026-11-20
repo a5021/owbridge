@@ -122,7 +122,7 @@ owbridge demo  addr 0x30  100k  C:\Windows\System32\CH341DLLA64.DLL
 
 Firmware
 --------
-  version            owbridge 1.4.0 (lib 3.1.3)
+  version            owbridge 1.5.0 (lib 3.1.3)
 
 Configuration (flash page 0x08007C00)
 -------------------------------------
@@ -348,7 +348,7 @@ Bus load (5 s)
 ```text
 Self test
 ---------
-  PASS firmware version       owbridge 1.4.0 (lib 3.1.3)
+  PASS firmware version       owbridge 1.5.0 (lib 3.1.3)
   PASS config crc             ok
   PASS bus presence           present
   PASS search                 9 devices

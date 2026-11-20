@@ -216,6 +216,19 @@ static inline uint8_t desc_ok(const br_cmd_desc_t *d,
     return (desc_len_ok(d, len) && desc_args_ok(d, data, len)) ? 1u : 0u;
 }
 
+/* A few values do not fit the one-byte BR_ARG_* set: OW_SEARCH takes a 1-Wire
+   search opcode, and only the two defined opcodes are meaningful. The check
+   runs before the command reaches the handler, so an invalid opcode neither
+   touches the bus nor clears the cache. */
+static uint8_t desc_opcode_ok(uint8_t cmd, const uint8_t *data, uint8_t len)
+{
+    if (cmd == BR_CMD_OW_SEARCH) {
+        uint8_t op = (len > 0u) ? data[0] : (uint8_t)ONEWIRE_SEARCH_ROM;
+        return (op == ONEWIRE_SEARCH_ROM || op == ONEWIRE_ALARM_SEARCH) ? 1u : 0u;
+    }
+    return 1u;
+}
+
 /* Latch the response and account for a finished command. Used both by the
    deferred main-loop poll and by the immediate poll in bridge_submit(), so an
    instant command never has to pass through a visible BUSY state. */
@@ -1402,7 +1415,7 @@ static uint8_t poll_config_set(br_response_t *resp)
     profile_config_set_begin();
     uint8_t ok = config_set(&cfg);
     profile_config_set_end();
-    resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_PARAM_ERROR);
+    resp_simple(resp, BR_CMD_CONFIG_SET, ok ? BR_OK : BR_BUS_ERROR);
     return 1u;
 }
 
@@ -1593,7 +1606,8 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
        command cannot use. */
     if (dlen > BR_MAX_DATA ||
         len != (uint8_t)(2u + dlen) ||
-        !desc_ok(desc, frame + 2u, dlen)) {
+        !desc_ok(desc, frame + 2u, dlen) ||
+        !desc_opcode_ok(cmd, frame + 2u, dlen)) {
         latch_reject(cmd, BR_PARAM_ERROR);
         return 1u;
     }
