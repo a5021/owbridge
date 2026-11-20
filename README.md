@@ -84,7 +84,7 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `OW_MCU` | `STM32F030x6` | device macro |
 | `OW_SYSCLK_MHZ` | `48` | system clock |
 | `OW_PARASITE` | `ON` | parasite power |
-| `OW_MAX_DEVICES` | `16` | DS18B20 device table size |
+| `OW_MAX_DEVICES` | `16` | ROM cache and DS18B20 table size, 1..32 |
 | `OW_LIBRARY_TAG` | `v3.1.3` | `stm32-async-1wire` git tag |
 | `OW_OPT` | `-O2` | optimisation flag, applied to the firmware **and** the library |
 | `OWBRIDGE_PROFILE` | `OFF` | one-off TIM3 I2C timing profiler (I2C build only) |
@@ -93,9 +93,17 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 
 - **UART**: TX via DMA1 channel 2, RX via DMA1 channel 5 in circular mode
   (remapped from the default channel 3, which the 1-Wire feed owns, through
-  `SYSCFG_CFGR1.USART1RX_DMA_RMP`). The main loop polls the DMA state.
-- **SPI**: polled RXNE/TXE in the main loop. DMA is not possible: SPI1_RX is
-  DMA1 channel 2 and SPI1_TX is DMA1 channel 3, which the 1-Wire engine owns.
+  `SYSCFG_CFGR1.USART1RX_DMA_RMP`). The main loop polls the DMA state, drains
+  up to 32 bytes per call from a 512-byte ring, and drops a half-received
+  frame or AT line after 100 ms of silence. Without interrupts there is no
+  way to count ring overwrites; the 512-byte ring covers the longest blocking
+  path (`CONFIG_SET`, about 23 ms) with a wide margin, and the frame CRC plus
+  the gap timeout resynchronise the decoder if the host ever overruns it.
+- **SPI**: polled FIFO handling in the main loop: `DR` is accessed byte-wise,
+  up to four bytes are drained/filled per call, both FIFOs are reset at each
+  phase boundary, and a loss-of-CS response phase returns to command mode
+  after 100 ms. DMA is not possible: SPI1_RX is DMA1 channel 2 and SPI1_TX is
+  DMA1 channel 3, which the 1-Wire engine owns.
 - **I2C**: software slave, polled SCL/SDA edges in the main loop. No EXTI, no
   DMA (GPIO edges cannot trigger DMA). During an I2C transaction the 1-Wire
   poll is deferred (with a 50 ms no-edge safety valve), so its encode/decode
@@ -271,13 +279,18 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.3.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.4.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
 | `AT+TEMP` | `TEMP <t1> <t2> ...` |
 | `AT+STAT` | `STAT resets=<n> no_presence=<n>` |
 | `AT+DEVS` | `DEVS <rom> <rom> ...` |
+
+AT and binary share one latched response slot: do not send binary frames while
+an AT command is `BUSY`, or the reply will be rendered in the wrong format
+(and vice versa). `AT+DEVS` prints at most 20 ROMs, the same batch limit as
+`OW_GET_DEVICES`; use the binary command with `offset` for a larger cache.
 
 ### Status codes
 
@@ -333,6 +346,22 @@ pipelines more than two commands must keep a timeout for the dropped one.
 `OW_ABORT` cannot interrupt the library's in-flight hardware operation: it
 discards commands already queued behind it and returns `ABORTED` once the bus
 is free. `OW_READ_BYTES` accepts at most 32 bytes per call (`n` in `data[0]`).
+
+`OW_GET_STATUS.flags` bits:
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 | `BUSY` | a command is in flight |
+| 1 | `CACHE_TRUNCATED` | the last search saw more devices than the cache holds |
+| 3 | `PARASITE` | the DS18B20 driver is in parasite mode |
+
+`CACHE_TRUNCATED` is set only after a completed `OW_SEARCH` / `OW_SEARCH_ALM`
+and is cleared by the next search or `OW_CLEAR_CACHE`. The search collects at
+most the requested `max` ROMs (capped at the compile-time cache size) but
+walks one device further, so the host can tell "exactly N" from "more than N".
+`OW_GET_DEVICES` returns at most 20 ROMs per response (`160 / 8`); larger
+caches are read in pages with `offset` and `count`, and `AT+DEVS` prints the
+first 20.
 
 `OW_MATCH_ROM`, `OW_SKIP_ROM` and `OW_READ_ROM` append a `present` byte taken
 from the reset that precedes the command. The command still answers `BR_OK`
@@ -391,6 +420,14 @@ device does not appear until the next search. Between such a command and the
 following `TEMP_READ_ALL` the slot order is therefore stable, so no cache
 generation field is needed. Do not queue a search between `TEMP_CONVERT` and
 `TEMP_READ_ALL` unless the newer device set is what you want to read.
+
+`OW_MAX_DEVICES` sizes both the cache and the library's device table (1..32).
+At the default 16 the cache holds 16 ROMs; a bus with a seventeenth device
+sets `CACHE_TRUNCATED` instead of silently dropping it. Raising the option
+needs RAM for 8 bytes per ROM in both tables; `OW_GET_DEVICES` still answers
+20 ROMs per frame, so the host pages through offsets above that. At 32 the
+UART image leaves exactly the 1 KB stack budget below the 4 KB limit; the
+default 16 leaves about 1.1 KB.
 
 ### DS2431 EEPROM
 
@@ -501,13 +538,14 @@ override it at runtime with `OW_SET_POWER`.
 
 | Variant | Flash (`-O2`) | RAM (bss + data) |
 |---------|---------------|------------------|
-| UART | 24 588 B | 2 420 B |
-| SPI | 21 132 B | 2 200 B |
-| I2C | 21 212 B | 2 052 B |
+| UART | 23 372 B | 2 944 B |
+| SPI | 20 204 B | 2 220 B |
+| I2C | 19 840 B | 2 076 B |
 
 All fit the 31 KB code region and the 4 KB RAM. The RAM figures exclude the
-stack; about 1.6-2.0 KB remains below the 4 KB limit. The linker script
-defines `_Min_Stack_Size` as a budget but does not enforce it.
+stack: UART leaves about 1.1 KB below the 4 KB limit after its 512-byte RX
+ring, SPI and I2C leave about 1.8-2.0 KB. The linker script defines
+`_Min_Stack_Size` as a budget but does not enforce it.
 
 The per-command descriptor still occupies 12 bytes, so adding `min_len`,
 `max_len` and `flags` did not grow the 256-entry `cmd_map` (3072 bytes in

@@ -84,6 +84,16 @@ BR_ABORTED = 0x0B
 #: Slot value in TEMP_READ_ALL: the cached DS18B20 has no valid reading
 BR_TEMP_INVALID = 0x8000
 
+#: OW_GET_STATUS flag bits
+BR_FLAG_BUSY = 0x01
+BR_FLAG_CACHE_TRUNCATED = 0x02
+BR_FLAG_PARASITE = 0x08
+
+#: Largest ROM batch the firmware returns in one OW_GET_DEVICES response.
+CACHE_PAGE = 20
+#: Search limit used by the tools; the firmware clamps it to its cache size.
+CACHE_PROBE_MAX = 32
+
 STATUS_NAMES = {
     BR_OK: "OK",
     BR_BUSY: "BUSY",
@@ -809,8 +819,9 @@ class Bridge:
     def ow_status(self) -> dict:
         raw = self.expect(0x0D)
         return {
-            "busy": bool(raw[0] & 0x01),
-            "parasite": bool(raw[0] & 0x08),
+            "busy": bool(raw[0] & BR_FLAG_BUSY),
+            "cache_truncated": bool(raw[0] & BR_FLAG_CACHE_TRUNCATED),
+            "parasite": bool(raw[0] & BR_FLAG_PARASITE),
             "flags": raw[0],
             "devices": raw[1] if len(raw) > 1 else 0,
         }
@@ -873,11 +884,12 @@ class Bridge:
 
     # -- search ------------------------------------------------------------
 
-    def ow_search(self, mode: int = 0xF0, family: int = 0, max_devices: int = 16) -> int:
+    def ow_search(self, mode: int = 0xF0, family: int = 0,
+                  max_devices: int = CACHE_PROBE_MAX) -> int:
         data = bytes([mode, family, max_devices])
         return self.expect(0x09, data, timeout=15.0)[0]
 
-    def ow_search_alarm(self, max_devices: int = 16) -> int:
+    def ow_search_alarm(self, max_devices: int = CACHE_PROBE_MAX) -> int:
         return self.expect(0x0A, bytes([max_devices]), timeout=15.0)[0]
 
     def ow_get_count(self) -> int:
@@ -986,13 +998,32 @@ def crc32(data: bytes) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def read_all_devices(bridge: Bridge, count: int = None) -> list:
+    """Read the whole ROM cache, paging OW_GET_DEVICES every 20 entries."""
+    total = bridge.ow_get_count() if count is None else count
+    devices = []
+    while len(devices) < total:
+        want = min(CACHE_PAGE, total - len(devices))
+        chunk = bridge.ow_get_devices(len(devices), want)
+        if not chunk:
+            break
+        devices.extend(chunk)
+        if len(chunk) < want:
+            break
+    return devices
+
+
 def find_devices(bridge: Bridge, out: Out) -> list:
     """Search the bus and return the ROM list from the cache."""
-    bridge.ow_search(0xF0, 0, 16)
+    bridge.ow_search(0xF0, 0, CACHE_PROBE_MAX)
     count = bridge.ow_get_count()
-    devices = bridge.ow_get_devices(0, 16)
+    devices = read_all_devices(bridge, count)
     if len(devices) != count:
         out.warn("search reported %d devices, the cache returned %d" % (count, len(devices)))
+    status = bridge.ow_status()
+    if status["cache_truncated"]:
+        out.warn("ROM cache is full at %d devices; raise OW_MAX_DEVICES to see the rest"
+                 % count)
     return devices
 
 
@@ -1018,9 +1049,13 @@ def sc_info(bridge: Bridge, out: Out, args) -> dict:
     out.kv("busy", "yes" if status["busy"] else "no")
     out.kv("power mode", "parasite" if status["parasite"] else "external")
     out.kv("cached devices", str(status["devices"]))
+    out.kv("cache truncated", "yes" if status["cache_truncated"] else "no")
     out.kv("flags", "0x%02X" % status["flags"])
     if status["busy"]:
         out.note("BUSY is set because OW_GET_STATUS itself is still the command in flight.")
+    if status["cache_truncated"]:
+        out.note("The last search found more devices than the ROM cache holds; "
+                 "raise OW_MAX_DEVICES to keep them all.")
 
     out.title("Statistics")
     stats = bridge.stats_get()
@@ -1039,11 +1074,15 @@ def sc_scan(bridge: Bridge, out: Out, args) -> dict:
         out.warn("no device answered the reset pulse")
         return {"presence": False, "count": 0, "devices": []}
 
-    count = bridge.ow_search(0xF0, 0, 16)
+    count = bridge.ow_search(0xF0, 0, CACHE_PROBE_MAX)
     cached = bridge.ow_get_count()
-    devices = bridge.ow_get_devices(0, 16)
+    devices = read_all_devices(bridge, cached)
     out.kv("search found", str(count))
     out.kv("cache count", str(cached))
+    status = bridge.ow_status()
+    if status["cache_truncated"]:
+        out.warn("ROM cache is full at %d devices; the listing is incomplete"
+                 % cached)
 
     rows = []
     for index, rom in enumerate(devices):
@@ -1727,12 +1766,12 @@ def sc_selftest(bridge: Bridge, out: Out, args) -> dict:
     check("bus presence", lambda: "present" if bridge.ow_reset() else "no device")
 
     def search():
-        count = bridge.ow_search(0xF0, 0, 16)
+        count = bridge.ow_search(0xF0, 0, CACHE_PROBE_MAX)
         return "%d devices" % count
     check("search", search)
 
     def roms():
-        roms = bridge.ow_get_devices(0, 16)
+        roms = read_all_devices(bridge)
         bad = [fmt_rom(r) for r in roms if not rom_crc_ok(r)]
         if bad:
             raise BridgeError("bad ROM CRC: " + ", ".join(bad))
@@ -1750,7 +1789,7 @@ def sc_selftest(bridge: Bridge, out: Out, args) -> dict:
     check("temperature", temp)
 
     def eeprom():
-        rom = next((r for r in bridge.ow_get_devices(0, 16) if r[0] == 0x2D), None)
+        rom = next((r for r in read_all_devices(bridge) if r[0] == 0x2D), None)
         if rom is None:
             return "skipped (no DS2431)"
         data = read_eeprom_range(bridge, rom, 0, 8)
@@ -1758,7 +1797,7 @@ def sc_selftest(bridge: Bridge, out: Out, args) -> dict:
     check("eeprom", eeprom)
 
     def pio():
-        rom = next((r for r in bridge.ow_get_devices(0, 16) if r[0] == 0x3A), None)
+        rom = next((r for r in read_all_devices(bridge) if r[0] == 0x3A), None)
         if rom is None:
             return "skipped (no DS2413)"
         pio_value, latches = bridge.io_read(rom)

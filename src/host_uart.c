@@ -22,21 +22,28 @@
 #include "cache.h"
 #include "config.h"
 #include "protocol.h"
+#include "board.h"
 
 #include "stm32f0xx.h"
 
 #include <string.h>
 
-#define UART_RX_BUF 128u
-/* AT+DEVS with the full 16-ROM cache needs 5 bytes of prefix plus 16 x 17
-   bytes of ROM text and CRLF; the old 200-byte buffer truncated it. */
-#define UART_TX_BUF 288u
-#define AT_LINE_BUF 48u
+#define UART_RX_BUF 512u
+/* AT+DEVS prints one response batch: at most BR_MAX_RESP/8 ROMs, 17 text
+   bytes each, plus the "DEVS " prefix and CRLF. 352 bytes covers 20 ROMs. */
+#define UART_TX_BUF 352u
+#define AT_LINE_BUF 24u
+
+/* A binary frame is at most 42 bytes, so 100 ms of silence means the host
+   stopped mid-frame. The same timeout drops a half-written AT line. */
+#define UART_RX_GAP_MS 100u
+#define UART_RX_BUDGET 32u
 
 /* --- RX DMA ring ---------------------------------------------------------- */
 
 static uint8_t rx_dma_buf[UART_RX_BUF];
-static uint8_t rx_head;
+static uint16_t rx_head;
+static uint32_t rx_last_ms;
 
 /* --- TX DMA --------------------------------------------------------------- */
 
@@ -46,7 +53,7 @@ static uint8_t tx_busy;
 
 /* --- Binary RX decoder ---------------------------------------------------- */
 
-static uint8_t rx_frame[80];
+static uint8_t rx_frame[48];
 static uint8_t rx_idx;
 static uint8_t rx_state;
 static uint8_t rx_len;
@@ -55,6 +62,7 @@ static uint8_t rx_len;
 
 static char at_line[AT_LINE_BUF];
 static uint8_t at_idx;
+static uint32_t at_last_ms;
 static uint8_t at_active;
 static uint8_t at_cmd;
 static uint8_t at_temp_step;
@@ -496,11 +504,16 @@ static void uart_decode(uint8_t b)
 
 /* --- One received byte ---------------------------------------------------- */
 
-static void uart_rx_byte(uint8_t b)
+static void uart_rx_byte(uint8_t b, uint32_t now)
 {
     if (rx_state != 0u || b == 0xAAu) {
+        if (rx_state == 0u) {
+            at_idx = 0u; /* a binary frame abandons a partial AT line */
+        }
+        rx_last_ms = now;
         uart_decode(b);
     } else if (b == '\r' || b == '\n') {
+        at_last_ms = now;
         if (at_idx > 0u) {
             at_line[at_idx] = '\0';
             uint8_t cmd = at_parse(at_line);
@@ -513,8 +526,11 @@ static void uart_rx_byte(uint8_t b)
                 at_submit(cmd);
             }
         }
-    } else if (at_idx < (AT_LINE_BUF - 1u)) {
-        at_line[at_idx++] = (char)b;
+    } else {
+        if (at_idx < (AT_LINE_BUF - 1u)) {
+            at_line[at_idx++] = (char)b;
+        }
+        at_last_ms = now;
     }
 }
 
@@ -546,24 +562,40 @@ void host_uart_init(void)
     DMA1_Channel2->CPAR = (uint32_t)&USART1->TDR;
 
     rx_head = 0u;
+    rx_last_ms = 0u;
     tx_busy = 0u;
     last_seq = 0u;
     rx_state = 0u;
     at_idx = 0u;
+    at_last_ms = 0u;
     at_active = 0u;
     reply_head = reply_tail = reply_count = 0u;
 }
 
 void host_uart_poll(void)
 {
-    /* 1. Consume up to a few RX bytes from the circular DMA buffer. */
+    /* 0. Drop a half-received frame or AT line after a pause. Without this a
+       truncated binary frame would keep the decoder out of sync until the
+       next 0xAA, swallowing every AT command in between. */
+    uint32_t now = board_millis();
+    if (rx_state != 0u && (uint32_t)(now - rx_last_ms) > UART_RX_GAP_MS) {
+        rx_state = 0u;
+    }
+    if (at_idx != 0u && (uint32_t)(now - at_last_ms) > UART_RX_GAP_MS) {
+        at_idx = 0u;
+    }
+
+    /* 1. Consume up to a batch of RX bytes from the circular DMA buffer. */
     uint16_t cndtr = DMA1_Channel5->CNDTR;
-    uint8_t pos = (uint8_t)(UART_RX_BUF - cndtr);
-    uint8_t budget = 8u;
+    uint16_t pos = (uint16_t)(UART_RX_BUF - cndtr);
+    if (pos >= UART_RX_BUF) {
+        pos = 0u;
+    }
+    uint8_t budget = UART_RX_BUDGET;
     while (rx_head != pos && budget > 0u) {
         uint8_t b = rx_dma_buf[rx_head];
-        rx_head = (uint8_t)((rx_head + 1u) % UART_RX_BUF);
-        uart_rx_byte(b);
+        rx_head = (uint16_t)((rx_head + 1u) % UART_RX_BUF);
+        uart_rx_byte(b, now);
         budget--;
     }
 

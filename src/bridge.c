@@ -25,15 +25,12 @@
 #include "fast_copy.h"
 #include "profile.h"
 
-/* A search fills both the library's device table and the bridge ROM cache.
-   Different sizes would silently cap one of them, so the build passes the
-   same value to both and this check keeps them in step. */
-#ifndef OW_MAX_DEVICES
-#error "OW_MAX_DEVICES must be defined by the build (see CMakeLists.txt)"
-#endif
-#if OW_MAX_DEVICES != BR_CACHE_MAX
-#error "OW_MAX_DEVICES must equal BR_CACHE_MAX (src/cache.h)"
-#endif
+/* The ROM cache and the library's device table are sized by the same build
+   option (OW_MAX_DEVICES); cache.h applies it and enforces the 1..32 range. */
+
+/* One OW_GET_DEVICES response cannot carry more ROMs than the frame budget;
+   larger caches are read in pages by offset. */
+#define BR_ROM_BATCH (BR_MAX_RESP / 8u)
 
 /* --- Bus state ------------------------------------------------------------ */
 
@@ -289,10 +286,16 @@ void ds18b20_busy(unsigned action)
 
 /* --- Search sink ---------------------------------------------------------- */
 
+/* The search runs one device past the requested limit so the bridge can tell
+   "exactly N" from "more than N" without keeping the extra ROM. */
+static uint8_t search_limit;
+
 static uint8_t search_sink(const uint8_t *rom)
 {
     profile_sink_begin();
-    cache_add(rom);
+    if (cache_count() < search_limit) {
+        cache_add(rom);
+    }
     profile_sink_end();
     return 0u; /* continue the search */
 }
@@ -608,15 +611,34 @@ static uint8_t poll_ow_read_rom(br_response_t *resp)
 
 static uint8_t search_cmd;
 static uint8_t search_family;
-static uint8_t search_max;
+
+/* Cap the request at the compile-time cache size. The library is asked for
+   one more entry so "found > cached" is detectable. */
+static void search_set_limit(uint8_t requested)
+{
+    search_limit = (requested > (uint8_t)BR_CACHE_MAX)
+                 ? (uint8_t)BR_CACHE_MAX : requested;
+}
+
+static uint8_t search_probe_max(void)
+{
+    return (search_limit == 0u) ? 0u : (uint8_t)(search_limit + 1u);
+}
+
+static void search_finish(void)
+{
+    if (onewire_search_count() > search_limit) {
+        cache_mark_truncated();
+    }
+}
 
 static void start_ow_search(const br_command_t *cmd)
 {
     search_cmd = (cmd->len > 0u) ? cmd->data[0] : ONEWIRE_SEARCH_ROM;
     search_family = (cmd->len > 1u) ? cmd->data[1] : 0u;
-    search_max = (cmd->len > 2u) ? cmd->data[2] : (uint8_t)BR_CACHE_MAX;
+    search_set_limit((cmd->len > 2u) ? cmd->data[2] : (uint8_t)BR_CACHE_MAX);
     cache_clear();
-    onewire_search_start(search_sink, search_max, search_cmd, search_family);
+    onewire_search_start(search_sink, search_probe_max(), search_cmd, search_family);
 }
 
 static uint8_t poll_ow_search(br_response_t *resp)
@@ -627,6 +649,7 @@ static uint8_t poll_ow_search(br_response_t *resp)
     if (!done) {
         return 0u;
     }
+    search_finish();
     resp->status = BR_OK;
     resp->cmd = BR_CMD_OW_SEARCH;
     resp->len = 1u;
@@ -638,9 +661,9 @@ static void start_ow_search_alm(const br_command_t *cmd)
 {
     search_cmd = ONEWIRE_ALARM_SEARCH;
     search_family = 0u;
-    search_max = (cmd->len > 0u) ? cmd->data[0] : (uint8_t)BR_CACHE_MAX;
+    search_set_limit((cmd->len > 0u) ? cmd->data[0] : (uint8_t)BR_CACHE_MAX);
     cache_clear();
-    onewire_search_start(search_sink, search_max, search_cmd, search_family);
+    onewire_search_start(search_sink, search_probe_max(), search_cmd, search_family);
 }
 
 static uint8_t poll_ow_search_alm(br_response_t *resp)
@@ -648,6 +671,7 @@ static uint8_t poll_ow_search_alm(br_response_t *resp)
     if (!onewire_search_poll()) {
         return 0u;
     }
+    search_finish();
     resp->status = BR_OK;
     resp->cmd = BR_CMD_OW_SEARCH_ALM;
     resp->len = 1u;
@@ -694,6 +718,9 @@ static uint8_t poll_ow_get_status(br_response_t *resp)
     if (bus.state == BR_BUS_BUSY) {
         flags |= 0x01u;
     }
+    if (cache_truncated() != 0u) {
+        flags |= 0x02u;
+    }
     if (ds18b20_parasite_mode()) {
         flags |= 0x08u;
     }
@@ -728,6 +755,9 @@ static uint8_t poll_ow_get_devices(br_response_t *resp)
     uint8_t n = (uint8_t)(total - offset);
     if (n > count) {
         n = count;
+    }
+    if (n > BR_ROM_BATCH) {
+        n = (uint8_t)BR_ROM_BATCH;
     }
     if (n != 0u) {
         fast_copy(resp->data, cache_roms() + (uint16_t)offset * 8u,

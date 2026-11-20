@@ -383,7 +383,7 @@ def main(argv=None) -> int:
             result["summary"] = summary
 
             # The device cache must not have changed while the loop ran.
-            cached = bridge.ow_get_devices(0, 16)
+            cached = demo.read_all_devices(bridge)
             result["checks"]["cache_unchanged"] = cached == devices
             result["checks"]["all_cycles_ok"] = len(records) > 0
             result["checks"]["all_sensors_read"] = summary["missing_readings"] == 0

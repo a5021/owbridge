@@ -10,10 +10,22 @@
 
 static uint8_t cache_rom[BR_CACHE_MAX][8] __attribute__((aligned(4)));
 static uint8_t cache_count_;
+static uint8_t cache_truncated_;
 
 void cache_clear(void)
 {
     cache_count_ = 0u;
+    cache_truncated_ = 0u;
+}
+
+uint8_t cache_truncated(void)
+{
+    return cache_truncated_;
+}
+
+void cache_mark_truncated(void)
+{
+    cache_truncated_ = 1u;
 }
 
 uint8_t cache_count(void)

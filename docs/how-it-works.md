@@ -112,6 +112,26 @@ while the host keeps polling. Nothing blocks.
   SCL/SDA edge has been seen for 50 ms; a live frame, however slow, keeps the
   1-Wire state machine deferred but is never cut in half.
 
+### Host link edge cases
+
+- **UART resynchronisation.** A binary frame that stops mid-way would hold
+  the decoder until another `0xAA`, swallowing every AT command in between.
+  After 100 ms of silence the decoder drops the partial frame, and a binary
+  header also abandons a half-written AT line. The RX ring is 512 bytes and
+  up to 32 bytes are processed per loop, which covers the 23 ms `CONFIG_SET`
+  block with room to spare.
+- **ROM cache saturation.** A search collects at most the requested number of
+  ROMs, but walks one device further. If that extra device exists,
+  `OW_GET_STATUS` reports `CACHE_TRUNCATED` (bit 1); the host is no longer
+  left to guess whether the "16 devices" answer was the whole bus. The cache
+  size is the compile-time `OW_MAX_DEVICES` (1..32); `OW_GET_DEVICES` pages
+  20 ROMs per response.
+- **SPI frame boundaries.** CS alone delimits a transaction. A short write
+  (fewer than two bytes) leaves the slave in command phase instead of
+  switching to response phase, both FIFOs are reset at each phase boundary,
+  and a response phase that loses CS returns to command mode after 100 ms.
+  `DR` is accessed byte-wise because the register is 16 bits wide on the F0.
+
 The dispatch table has one entry per command:
 
 ```c

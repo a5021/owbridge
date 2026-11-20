@@ -39,6 +39,11 @@ and a frame that arrives with both queue slots full is dropped without a
 reply. `owbridge_demo.py queue` measures that counter instead of waiting for a
 `QUEUE_FULL` frame.
 
+Since 1.4.0 the ROM cache size is the `OW_MAX_DEVICES` build option (1..32,
+default 16), `OW_GET_DEVICES` returns at most 20 ROMs per response, and
+`OW_GET_STATUS` bit 1 reports `CACHE_TRUNCATED`. The tools page through the
+cache and warn when the last search found more devices than it can hold.
+
 ## Host-only unit tests
 
 `python3 -m unittest -v test_host_helpers` checks the positional mapping,

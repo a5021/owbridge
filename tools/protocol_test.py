@@ -404,9 +404,9 @@ def phase_stale(report: Report, bridge: Bridge, ctx: dict) -> None:
     # The bus must still be alive and the cache intact after the rejects.
     try:
         present = bridge.ow_reset()
-        count = bridge.ow_search(0xF0, 0, 16)
+        count = bridge.ow_search(0xF0, 0, demo.CACHE_PROBE_MAX)
         bridge.ow_get_count()
-        devices = bridge.ow_get_devices(0, 16)
+        devices = demo.read_all_devices(bridge, count)
     except (BridgeError, BridgeStatus, BridgeTimeout) as exc:
         report.check("stale", "bus alive after rejects", False, str(exc))
         return
@@ -681,12 +681,38 @@ def phase_failures(report: Report, bridge: Bridge, ctx: dict) -> None:
                   bytes([0x31, 17]) + ctx["rom2d"] + bytes([0x71]) + b"\x00" * 8)
 
 
+def phase_cache(report: Report, bridge: Bridge, ctx: dict) -> None:
+    """A limited search must say that more devices exist."""
+    group = "cache"
+    if ctx["device_count"] < 2:
+        report.skip(group, "truncation flag", "fewer than two devices on the bench")
+        return
+    try:
+        count = bridge.ow_search(0xF0, 0, 1)
+        cached = bridge.ow_get_count()
+        status = bridge.ow_status()
+        bridge.ow_search(0xF0, 0, demo.CACHE_PROBE_MAX)
+        full = bridge.ow_status()
+    except (BridgeError, BridgeStatus, BridgeTimeout) as exc:
+        report.check(group, "limited search truncation flag", False, str(exc))
+        return
+    report.check(group, "max=1 caches one and sets CACHE_TRUNCATED",
+                 count == 1 and cached == 1 and status["cache_truncated"],
+                 "found=%d cached=%d flags=0x%02X"
+                 % (count, cached, status["flags"]))
+    report.check(group, "full search clears the flag",
+                 not full["cache_truncated"]
+                 and full["devices"] == ctx["device_count"],
+                 "cached=%d baseline=%d flags=0x%02X"
+                 % (full["devices"], ctx["device_count"], full["flags"]))
+
+
 def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
     try:
         version = bridge.firmware_ver()
         present = bridge.ow_reset()
-        count = bridge.ow_search(0xF0, 0, 16)
-        devices = bridge.ow_get_devices(0, 16)
+        count = bridge.ow_search(0xF0, 0, demo.CACHE_PROBE_MAX)
+        devices = demo.read_all_devices(bridge, count)
         temps = bridge.temp_read_all()
         stats = bridge.stats_get()
     except (BridgeError, BridgeStatus, BridgeTimeout) as exc:
@@ -743,9 +769,9 @@ def phase_destructive(report: Report, bridge: Bridge, ctx: dict) -> None:
 # --- Setup ---------------------------------------------------------------- #
 
 def scan(bridge: Bridge) -> tuple:
-    bridge.ow_search(0xF0, 0, 16)
+    bridge.ow_search(0xF0, 0, demo.CACHE_PROBE_MAX)
     count = bridge.ow_get_count()
-    devices = bridge.ow_get_devices(0, 16)
+    devices = demo.read_all_devices(bridge, count)
     return count, devices
 
 
@@ -850,6 +876,7 @@ def main(argv=None) -> int:
             phase_stale(report, bridge, ctx)
             phase_transport(report, bridge)
             phase_failures(report, bridge, ctx)
+            phase_cache(report, bridge, ctx)
             phase_integrity(report, bridge, ctx)
             if args.fuzz > 0:
                 phase_fuzz(report, bridge, specs, ctx, args.fuzz, args.seed)

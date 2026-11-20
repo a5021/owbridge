@@ -73,6 +73,37 @@ def make_record(missing):
     }
 
 
+class CachePagingTests(unittest.TestCase):
+    class FakeBridge:
+        def __init__(self, devices):
+            self.devices = devices
+            self.calls = []
+
+        def ow_get_count(self):
+            return len(self.devices)
+
+        def ow_get_devices(self, offset, count):
+            self.calls.append((offset, count))
+            return self.devices[offset:offset + count]
+
+    def test_single_batch(self):
+        devices = [make_rom(i) for i in range(9)]
+        bridge = self.FakeBridge(devices)
+        self.assertEqual(demo.read_all_devices(bridge), devices)
+        self.assertEqual(bridge.calls, [(0, 9)])
+
+    def test_pages_above_the_response_limit(self):
+        devices = [make_rom(i) for i in range(25)]
+        bridge = self.FakeBridge(devices)
+        self.assertEqual(demo.read_all_devices(bridge), devices)
+        self.assertEqual(bridge.calls, [(0, demo.CACHE_PAGE), (20, 5)])
+
+    def test_empty_cache(self):
+        bridge = self.FakeBridge([])
+        self.assertEqual(demo.read_all_devices(bridge), [])
+        self.assertEqual(bridge.calls, [])
+
+
 class ScanSummaryTests(unittest.TestCase):
     def test_missing_readings_are_counted(self):
         summary = scan.summarise([make_record([]), make_record(["28-1"])], 2.0)
