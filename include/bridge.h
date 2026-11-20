@@ -18,8 +18,8 @@
  *
  * A command is executed asynchronously: while the 1-Wire bus is busy the
  * response status is BR_BUSY and the host polls. Commands submitted while the
- * bus is busy are queued (up to BR_QUEUE_SIZE); the response status is
- * BR_QUEUE_FULL when the queue is full.
+ * bus is busy are queued (up to BR_QUEUE_SIZE); a frame that arrives when the
+ * queue is full is dropped without a response and counted in queue_drop.
  */
 
 #ifndef BRIDGE_H
@@ -64,7 +64,7 @@ enum {
     BR_PARAM_ERROR   = 0x07u,
     BR_BUS_ERROR     = 0x08u,
     BR_NOT_SUPPORTED = 0x09u,
-    BR_QUEUE_FULL    = 0x0Au,
+    BR_QUEUE_FULL    = 0x0Au,  /**< reserved; the bridge drops the frame since 1.3.0 */
     BR_ABORTED       = 0x0Bu
 };
 

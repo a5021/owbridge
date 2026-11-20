@@ -640,6 +640,47 @@ def phase_transport(report: Report, bridge: Bridge) -> None:
 
     version_frame()
 
+def _absent(rom: bytes) -> bytes:
+    """The same ROM with its CRC byte flipped: no device can match it."""
+    return rom[:7] + bytes([rom[7] ^ 0xFF])
+
+
+def phase_failures(report: Report, bridge: Bridge, ctx: dict) -> None:
+    """A failed device access must not look like a successful one."""
+    group = "failures"
+    for label, code, rom in (
+        ("TEMP_GET_RES", 0x24, ctx["rom28"]),
+        ("TEMP_GET_ALARM", 0x26, ctx["rom28"]),
+        ("TEMP_DETECT_P", 0x29, ctx["rom28"]),
+        ("EEPROM_READ", 0x30, ctx["rom2d"]),
+        ("IO_READ", 0x40, ctx["rom3a"]),
+    ):
+        if not rom:
+            report.skip(group, "%s absent device" % label,
+                        "no device of that family on the bench")
+            continue
+        frame = bytes([code, 8]) + _absent(rom)
+        if code == 0x30:
+            frame += bytes([0, 1])
+        try:
+            resp = send(bridge, frame, timeout=10.0)
+        except (BridgeError, BridgeTimeout) as exc:
+            report.check(group, "%s absent device -> NO_DEVICE" % label,
+                         False, "transport: %s" % exc)
+            continue
+        report.check(group, "%s absent device -> NO_DEVICE, empty" % label,
+                     resp.status == demo.BR_NO_DEVICE and resp.data == b"",
+                     "%s len=%d" % (resp.status_name, len(resp.data)))
+
+    if not ctx["rom2d"]:
+        report.skip(group, "EEPROM range checks", "no DS2431 on the bench")
+        return
+    expect_reject(report, bridge, group, "EEPROM_READ addr=121 len=8",
+                  bytes([0x30, 10]) + ctx["rom2d"] + bytes([121, 8]))
+    expect_reject(report, bridge, group, "EEPROM_WRITE addr=0x71 (unaligned)",
+                  bytes([0x31, 17]) + ctx["rom2d"] + bytes([0x71]) + b"\x00" * 8)
+
+
 def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
     try:
         version = bridge.firmware_ver()
@@ -670,9 +711,11 @@ def phase_verify(report: Report, bridge: Bridge, ctx: dict) -> None:
                  "%d value(s), %d invalid slot(s)"
                  % (len(signed), len(temps) - len(signed)))
     report.check("verify", "statistics readable",
-                 "uptime_s" in stats and "read_fail" in stats,
-                 "uptime %d s, read failures %d"
-                 % (stats["uptime_s"], stats.get("read_fail", -1)))
+                 "uptime_s" in stats and "read_fail" in stats
+                 and "queue_drop" in stats,
+                 "uptime %d s, read failures %d, queue drops %d"
+                 % (stats["uptime_s"], stats.get("read_fail", -1),
+                    stats.get("queue_drop", -1)))
 
 
 def phase_destructive(report: Report, bridge: Bridge, ctx: dict) -> None:
@@ -806,6 +849,7 @@ def main(argv=None) -> int:
             phase_structure(report, bridge, ctx)
             phase_stale(report, bridge, ctx)
             phase_transport(report, bridge)
+            phase_failures(report, bridge, ctx)
             phase_integrity(report, bridge, ctx)
             if args.fuzz > 0:
                 phase_fuzz(report, bridge, specs, ctx, args.fuzz, args.seed)

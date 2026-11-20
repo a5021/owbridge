@@ -6,6 +6,11 @@ run ([`i2c-stress-test.md`](i2c-stress-test.md)) with invalid-frame bursts,
 stale-buffer replay, queue/abort churn and parser fuzz while the bus stays
 close to saturation.
 
+> Historical note: this run used `e764fdb` (1.0.0), where a frame arriving with
+> both queue slots full answered `QUEUE_FULL`. Since 1.3.0 that frame is
+> dropped without a response and counted in `queue_drop`; see
+> [`how-it-works.md`](how-it-works.md).
+
 ## Setup
 
 | Item | Value |

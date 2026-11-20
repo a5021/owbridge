@@ -143,15 +143,16 @@ t+ms   status  cmd   name          data
 760.6  OK      0x0F  OW_GET_COUNT  09
 
 Queue full
-rejected           0x0F OW_GET_COUNT (depth 2 is already occupied)
+dropped            third frame, no response (queue_drop=1)
 ```
 
 Two things are worth noticing:
 
 - the bridge keeps only the **latest** response, so the conversion's own
   completion can be replaced by the queued command before the host reads it;
-- a third entry is rejected with `QUEUE_FULL`, not silently dropped. The host
-  can decide whether to retry.
+- a third entry is dropped without a response and counted in `queue_drop`, so
+  it can never overwrite the in-flight command's result. The host sees only
+  its own timeout.
 
 ## Captured: finding the devices
 

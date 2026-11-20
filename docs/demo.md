@@ -53,10 +53,11 @@ transaction. Two adapter quirks shape the transport:
 * `CH341StreamI2C()` returns success even when the slave NACKs the address
   phase. An unacknowledged read therefore appears as `FF FF ...`, which the
   demo treats as "not ready" and polls again.
-* The bridge echoes the command byte in every response, including `BUSY` and
-  `QUEUE_FULL`. If the echoed byte does not match the request, the write was
-  lost; the demo re-sends it (up to three times) instead of returning a stale
-  frame.
+* The bridge echoes the command byte in every response, including `BUSY`. If
+  the echoed byte does not match the request, the write was lost; the demo
+  re-sends it (up to three times) instead of returning a stale frame. A frame
+  that arrives while both queue slots are full gets no response at all; the
+  demo's per-command timeout covers that case.
 * While a long command is `BUSY`, a START can land inside a `bridge_poll()`
   step (10-50 us) and be missed. A logic-analyzer capture at 100 kHz shows
   these misses at the poll cadence (median 96 us after the previous STOP),
@@ -103,7 +104,7 @@ in-place redraw are disabled automatically (no escape codes leak to the screen).
 | `eeprom` | 128-byte dump in 8-byte passes, range read, and read-modify-write of one 8-byte block |
 | `io` | DS2413 pin/latch read and optional latch write |
 | `raw` | any command byte with an arbitrary payload, decoded header and hex dump |
-| `queue` | a long command with an instant command queued behind it, then a deliberate `QUEUE_FULL` |
+| `queue` | a long command with an instant command queued behind it, then a deliberately dropped frame counted in `queue_drop` |
 | `abort` | `OW_ABORT` dropping the queued command and reporting `ABORTED` |
 | `timing` | latency distribution and poll counts for instant and long commands |
 | `load` | the stress-harness workload: write + 163-byte response reads for N seconds |
@@ -121,7 +122,7 @@ owbridge demo  addr 0x30  100k  C:\Windows\System32\CH341DLLA64.DLL
 
 Firmware
 --------
-  version            owbridge 1.2.0 (lib 3.1.3)
+  version            owbridge 1.3.0 (lib 3.1.3)
 
 Configuration (flash page 0x08007C00)
 -------------------------------------
@@ -152,6 +153,8 @@ Statistics
   bus_short          0
   timeout            0
   aborts             0
+  read_fail          0
+  queue_drop         0
   uptime             604 s (10 min 4 s)
 ```
 
@@ -297,13 +300,14 @@ Command queue (depth 2)
 
 Queue full
 ----------
-  rejected           0x0F OW_GET_COUNT (depth 2 is already occupied)
+  dropped            third frame, no response (queue_drop=1)
 ```
 
 The bridge has one response slot. Convert T's own response is overwritten by
 the queued command as soon as that command completes, before the host can read
 it; the host identifies responses by the echoed command byte. Two commands fit
-in the queue, the third is rejected with `QUEUE_FULL`.
+in the queue; a third frame is dropped without a response and appears only as
+`queue_drop` in `STATS_GET`.
 
 ### `timing`
 
@@ -343,7 +347,7 @@ Bus load (5 s)
 ```text
 Self test
 ---------
-  PASS firmware version       owbridge 1.2.0 (lib 3.1.3)
+  PASS firmware version       owbridge 1.3.0 (lib 3.1.3)
   PASS config crc             ok
   PASS bus presence           present
   PASS search                 9 devices

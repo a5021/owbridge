@@ -194,6 +194,18 @@ from STOP detection to the latched response. No host-side gap is required:
 `OW_GET_STATUS`, `OW_GET_DEVICES` (with a populated cache), `STATS_GET` and
 `CONFIG_GET`. Details: [`docs/i2c-timing.md`](docs/i2c-timing.md).
 
+### I2C repeated START is not supported
+
+The bridge is a polled I2C slave: a command is submitted from the STOP
+handler, and the response is only ready after the main loop has run. A
+repeated START (write frame followed by START instead of STOP, typically to
+read with a chained transaction) is therefore **not a supported pattern**.
+The address phase that follows it is NACKed, and the bridge does not treat
+the preceding write as a command. Use write → STOP → short gap → read
+instead, which is what `tools/owbridge_demo.py` and the CH341A adapter do.
+At 100 kHz the STOP-to-read turnaround fits the slave's decoder; a master
+that cannot insert a STOP must expect NACKs and retry.
+
 ## Protocol
 
 ### Binary frame (UART and SPI)
@@ -259,7 +271,7 @@ payload before the irreversible step:
 | Command | Response |
 |---------|----------|
 | `AT` | `OK` |
-| `AT+VER` | `owbridge 1.2.0 (lib 3.1.3)` |
+| `AT+VER` | `owbridge 1.3.0 (lib 3.1.3)` |
 | `AT+OWRST` | `OK` / `NO DEVICE` |
 | `AT+OWSRCH` | `COUNT <n>` |
 | `AT+OWCNT` | `COUNT <n>` |
@@ -281,11 +293,18 @@ payload before the irreversible step:
 | 0x07 | PARAM_ERROR | invalid parameters (payload length or argument) |
 | 0x08 | BUS_ERROR | generic bus failure |
 | 0x09 | NOT_SUPPORTED | feature not supported |
-| 0x0A | QUEUE_FULL | command queue is full |
+| 0x0A | QUEUE_FULL | reserved; never returned since 1.3.0 |
 | 0x0B | ABORTED | operation aborted |
 
 Asynchronous commands (search, conversion, EEPROM write) first return `BUSY`;
 the host keeps polling the response until it becomes `OK` or an error.
+
+Both queue slots can be occupied by a running command and its successors. A
+frame that arrives when they are full is **dropped without a response** and
+counted in `queue_drop` (`STATS_GET`); it does not overwrite the in-flight
+command's response. The host sees only its own timeout, so a client that
+pipelines more than two commands must keep a timeout for the dropped one.
+`QUEUE_FULL` (0x0A) stays in the enum for compatibility but is not emitted.
 
 ## Commands
 
@@ -338,6 +357,12 @@ length of 8).
 | 0x28 | `TEMP_RECALL` | `rom[8]` | - |
 | 0x29 | `TEMP_DETECT_P` | `rom[8]` | `mode` |
 
+The three scratchpad readers (`0x24`, `0x26`, `0x29`) need the same read as
+`TEMP_READ`. When it fails they answer `NO_DEVICE` with an empty payload
+instead of `OK` with zeros: a zero `DETECT_P` result would otherwise look like
+"externally powered" and could make a host drop the strong pull-up on a
+parasite bus. Each failure also increments `read_fail`.
+
 `TEMP_READ_ALL` answers with one fixed 2-byte slot per **cached DS18B20**, in
 cache order (the order in which `OW_GET_DEVICES` returns the `0x28` entries),
 so its length is always `2 x` the number of DS18B20 entries in the cache. A
@@ -375,6 +400,12 @@ generation field is needed. Do not queue a search between `TEMP_CONVERT` and
 | 0x31 | `EEPROM_WRITE` | `rom[8]`, `addr`, `data[1..8]` | - |
 | 0x32 | `EEPROM_READ_S` | `rom[8]` | `data[11]` |
 
+`EEPROM_READ` rejects `addr + len > 128` and `EEPROM_WRITE` rejects a block
+that is not 8-byte aligned or runs past 128 with `PARAM_ERROR`; both are
+checked by the command descriptor, before the bus is touched. On a failed
+read (`0x30`, `0x32`) or PIO read (`0x40`) the response is `NO_DEVICE` with an
+empty payload, so the previous operation's bytes are never returned.
+
 ### DS2413 PIO
 
 | Code | Command | Parameters | Response |
@@ -390,14 +421,16 @@ generation field is needed. Do not queue a search between `TEMP_CONVERT` and
 | 0x51 | `CONFIG_SET` | `config[40]` | - |
 | 0x52 | `FIRMWARE_VER` | - | version string |
 | 0x53 | `RESET` | - | - (the MCU reboots; the response may be lost) |
-| 0x54 | `STATS_GET` | - | 8 counters (u32) + uptime |
+| 0x54 | `STATS_GET` | - | 9 counters (u32) + uptime |
 | 0x55 | `STATS_RESET` | - | - |
 
-`STATS_GET` returns eight big-endian u32 counters followed by uptime (seconds):
+`STATS_GET` returns nine big-endian u32 counters followed by uptime (seconds):
 `resets`, `presence_fail`, `crc_error`, `bus_short`, `timeout`, `commands`,
-`aborts`, `read_fail`. `presence_fail` counts a missing device on `OW_RESET`;
-`read_fail` counts a failed DS18B20 scratchpad read (no answer or bad CRC) in
-`TEMP_READ` and `TEMP_READ_ALL`. The host tools decode both by name.
+`aborts`, `read_fail`, `queue_drop`. `presence_fail` counts a missing device on
+`OW_RESET`; `read_fail` counts a failed DS18B20 scratchpad read (no answer or
+bad CRC) in `TEMP_READ`, `TEMP_READ_ALL` and the scratchpad readers;
+`queue_drop` counts a frame dropped because both queue slots were full. The
+host tools decode all of them by name.
 
 ### Parameter validation
 
@@ -431,7 +464,9 @@ Argument checks applied after the length range:
 - `TEMP_SET_RES` accepts 9..12 resolution bits, in the addressed form at
   `data[8]` and in the broadcast form at `data[0]`;
 - `TEMP_SET_ALARM` broadcast form needs both `th` and `tl`;
-- `EEPROM_READ` accepts a length byte in 1..8;
+- `EEPROM_READ` accepts a length byte in 1..8 and requires
+  `addr + len <= 128`;
+- `EEPROM_WRITE` requires an 8-byte-aligned `addr` and `addr + n <= 128`;
 - `OW_SET_PULLUP` and `OW_SET_POWER` accept 0 or 1;
 - `TEMP_CONVERT` accepts an empty payload or exactly 8 bytes with a nonzero
   ROM.
@@ -502,7 +537,7 @@ Verified on a bench with a 1-Wire bus carrying 7 x DS18B20, 1 x DS2431 and
 | raw scratchpad | temp 0x01B0 (27 C), cfg 0x7F (12 bit), CRC valid |
 | DS2431 read memory / scratchpad | OK |
 | DS2413 PIO write/read | OK |
-| `CONFIG_GET` / `STATS_GET` | 40 / 36 bytes |
+| `CONFIG_GET` / `STATS_GET` | 40 / 40 bytes |
 | AT commands (UART build) | all eight; `AT+TEMP` takes about 1 s |
 
 The UART build was exercised end to end. The I2C build was exercised end to

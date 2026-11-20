@@ -24,6 +24,10 @@ enum {
        TEMP_READ and TEMP_READ_ALL. Kept separate from PRESENCE_FAIL, which
        counts an absent device on OW_RESET. */
     BR_STAT_READ_FAIL,
+    /* A frame submitted while both queue slots were occupied. The frame is
+       dropped without a response, so the host only sees its running command
+       stay BUSY; this counter is the only trace of the loss. */
+    BR_STAT_QUEUE_DROP,
     BR_STAT_COUNT
 };
 

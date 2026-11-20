@@ -137,6 +137,64 @@ static void uart_tx_start(uint16_t len)
     tx_busy = 1u;
 }
 
+/* --- Deferred text replies ----------------------------------------------- */
+
+/* AT replies are queued as small codes and rendered only when the
+   transmitter is free. Rendering them directly from the RX path would
+   overwrite tx_dma_buf and restart the DMA channel in the middle of a binary
+   response, truncating it. */
+enum {
+    AT_REPLY_OK = 0u,
+    AT_REPLY_ERROR,
+    AT_REPLY_BUSY,
+    AT_REPLY_VER
+};
+
+#define AT_REPLY_QUEUE 4u
+
+static uint8_t reply_queue[AT_REPLY_QUEUE];
+static uint8_t reply_head;
+static uint8_t reply_tail;
+static uint8_t reply_count;
+
+static void reply_push(uint8_t kind)
+{
+    if (reply_count >= AT_REPLY_QUEUE) {
+        return; /* saturated: the host is not reading its replies */
+    }
+    reply_queue[reply_tail] = kind;
+    reply_tail = (uint8_t)((reply_tail + 1u) % AT_REPLY_QUEUE);
+    reply_count++;
+}
+
+static void reply_flush(void)
+{
+    if (tx_busy || reply_count == 0u) {
+        return;
+    }
+    uint8_t kind = reply_queue[reply_head];
+    reply_head = (uint8_t)((reply_head + 1u) % AT_REPLY_QUEUE);
+    reply_count--;
+
+    tx_pos = 0u;
+    switch (kind) {
+    case AT_REPLY_OK:
+        tx_puts("OK\r\n");
+        break;
+    case AT_REPLY_BUSY:
+        tx_puts("BUSY\r\n");
+        break;
+    case AT_REPLY_VER:
+        tx_puts(OWBRIDGE_VERSION "\r\n");
+        break;
+    case AT_REPLY_ERROR:
+    default:
+        tx_puts("ERROR\r\n");
+        break;
+    }
+    uart_tx_start(tx_pos);
+}
+
 /* --- Response push -------------------------------------------------------- */
 
 static void push_binary_response(void)
@@ -155,11 +213,9 @@ static void push_binary_response(void)
 
 static void at_error(void)
 {
-    tx_pos = 0u;
-    tx_puts("ERROR\r\n");
-    uart_tx_start(tx_pos);
+    reply_push(AT_REPLY_ERROR);
     at_active = 0u;
-    /* A failed submit may have latched a QUEUE_FULL response. Consume that
+    /* A failed submit may have latched a PARAM_ERROR response. Consume that
        sequence number here so it is not also sent as a binary frame. */
     last_seq = bridge_response_seq();
 }
@@ -256,9 +312,15 @@ static void push_at_response(void)
                 continue;
             }
             int16_t t = (int16_t)word;
+            /* Print the sign before the magnitude: with t/10 and a separate
+               remainder, -0.5 would otherwise come out as "0.5". */
+            if (t < 0) {
+                tx_putc('-');
+                t = (int16_t)-t;
+            }
             tx_put_int(t / 10);
-            tx_puts(".");
-            tx_put_int((t % 10) < 0 ? -(t % 10) : (t % 10));
+            tx_putc('.');
+            tx_put_int(t % 10);
         }
         tx_puts("\r\n");
         break;
@@ -329,15 +391,11 @@ static void at_submit(uint8_t cmd)
     uint8_t len = 0u;
 
     if (cmd == AT_TEST) {
-        tx_pos = 0u;
-        tx_puts("OK\r\n");
-        uart_tx_start(tx_pos);
+        reply_push(AT_REPLY_OK);
         return;
     }
     if (cmd == AT_VER) {
-        tx_pos = 0u;
-        tx_puts(OWBRIDGE_VERSION "\r\n");
-        uart_tx_start(tx_pos);
+        reply_push(AT_REPLY_VER);
         return;
     }
 
@@ -448,13 +506,9 @@ static void uart_rx_byte(uint8_t b)
             uint8_t cmd = at_parse(at_line);
             at_idx = 0u;
             if (cmd == AT_NONE) {
-                tx_pos = 0u;
-                tx_puts("ERROR\r\n");
-                uart_tx_start(tx_pos);
+                reply_push(AT_REPLY_ERROR);
             } else if (at_active) {
-                tx_pos = 0u;
-                tx_puts("BUSY\r\n");
-                uart_tx_start(tx_pos);
+                reply_push(AT_REPLY_BUSY);
             } else {
                 at_submit(cmd);
             }
@@ -497,6 +551,7 @@ void host_uart_init(void)
     rx_state = 0u;
     at_idx = 0u;
     at_active = 0u;
+    reply_head = reply_tail = reply_count = 0u;
 }
 
 void host_uart_poll(void)
@@ -519,7 +574,10 @@ void host_uart_poll(void)
         tx_busy = 0u;
     }
 
-    /* 3. Push a new response when the sequence changed. */
+    /* 3. A queued AT reply goes out before any freshly latched response. */
+    reply_flush();
+
+    /* 4. Push a new response when the sequence changed. */
     uint8_t seq = bridge_response_seq();
     if (seq != last_seq && !tx_busy) {
         last_seq = seq;

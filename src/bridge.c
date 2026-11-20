@@ -60,6 +60,8 @@ typedef struct {
 #define BR_ARG_RES_BITS   0x08u  /**< data[8] in DS18B20_RES_MIN..DS18B20_RES_MAX */
 #define BR_ARG_BOOL       0x10u  /**< data[0] is 0 or 1 */
 #define BR_ARG_EEPROM_N   0x20u  /**< data[9] in 1..DS2431_READ_PASS */
+#define BR_ARG_EEPROM_RD  0x40u  /**< data[8] + data[9] inside the DS2431 */
+#define BR_ARG_EEPROM_WR  0x80u  /**< aligned block inside the DS2431 */
 
 /* Keeps the descriptor initializers in field order. */
 #define BR_DESC(s, p, inst, mn, mx, fl) \
@@ -193,6 +195,20 @@ static uint8_t desc_args_ok(const br_cmd_desc_t *d,
     if ((d->flags & BR_ARG_EEPROM_N) != 0u &&
         (data[9] == 0u || data[9] > DS2431_READ_PASS)) {
         return 0u;
+    }
+    /* The library silently ignores an out-of-range request and the poll then
+       reports the previous operation's result, so the bridge must reject the
+       request here instead of returning stale EEPROM data. */
+    if ((d->flags & BR_ARG_EEPROM_RD) != 0u &&
+        ((uint16_t)data[8] + data[9] > DS2431_EEPROM_SIZE)) {
+        return 0u;
+    }
+    if ((d->flags & BR_ARG_EEPROM_WR) != 0u) {
+        uint8_t n = (uint8_t)(len - 9u);
+        if ((data[8] & 0x07u) != 0u ||
+            (uint16_t)data[8] + n > DS2431_EEPROM_SIZE) {
+            return 0u;
+        }
     }
     return 1u;
 }
@@ -968,10 +984,15 @@ static uint8_t poll_temp_get_res(br_response_t *resp)
     if (!ds18b20_read_scratchpad_poll()) {
         return 0u;
     }
+    if (!ds18b20_last_command_ok()) {
+        stats_count(BR_STAT_READ_FAIL);
+        resp_simple(resp, BR_CMD_TEMP_GET_RES, BR_NO_DEVICE);
+        return 1u;
+    }
     resp->status = BR_OK;
     resp->cmd = BR_CMD_TEMP_GET_RES;
     resp->len = 1u;
-    resp->data[0] = ds18b20_last_command_ok() ? scratch_resolution(temp_scratch) : 0u;
+    resp->data[0] = scratch_resolution(temp_scratch);
     return 1u;
 }
 
@@ -1013,11 +1034,16 @@ static uint8_t poll_temp_get_alarm(br_response_t *resp)
     if (!ds18b20_read_scratchpad_poll()) {
         return 0u;
     }
+    if (!ds18b20_last_command_ok()) {
+        stats_count(BR_STAT_READ_FAIL);
+        resp_simple(resp, BR_CMD_TEMP_GET_ALARM, BR_NO_DEVICE);
+        return 1u;
+    }
     resp->status = BR_OK;
     resp->cmd = BR_CMD_TEMP_GET_ALARM;
     resp->len = 2u;
-    resp->data[0] = ds18b20_last_command_ok() ? temp_scratch[2] : 0u;
-    resp->data[1] = ds18b20_last_command_ok() ? temp_scratch[3] : 0u;
+    resp->data[0] = temp_scratch[2];
+    resp->data[1] = temp_scratch[3];
     return 1u;
 }
 
@@ -1076,10 +1102,17 @@ static uint8_t poll_temp_detect_p(br_response_t *resp)
     if (!ds18b20_detect_parasite_poll()) {
         return 0u;
     }
+    if (!ds18b20_last_command_ok()) {
+        /* Reporting OK with mode 0 would look like "externally powered" and
+           could make the host drop the strong pull-up on a parasite bus. */
+        stats_count(BR_STAT_READ_FAIL);
+        resp_simple(resp, BR_CMD_TEMP_DETECT_P, BR_NO_DEVICE);
+        return 1u;
+    }
     resp->status = BR_OK;
     resp->cmd = BR_CMD_TEMP_DETECT_P;
     resp->len = 1u;
-    resp->data[0] = ds18b20_last_command_ok() ? ds18b20_parasite_mode() : 0u;
+    resp->data[0] = ds18b20_parasite_mode();
     return 1u;
 }
 
@@ -1111,11 +1144,17 @@ static uint8_t poll_eeprom_read(br_response_t *resp)
     if (!ds2431_read_memory_poll()) {
         return 0u;
     }
+    if (!ds2431_last_command_ok()) {
+        /* Never copy the previous pass's bytes: on a failed read the length
+           field is the only thing the host can trust. */
+        resp_simple(resp, BR_CMD_EEPROM_READ, BR_NO_DEVICE);
+        return 1u;
+    }
     uint8_t len = (bus.cmd.len > 9u) ? bus.cmd.data[9] : 1u;
     if (len > DS2431_READ_PASS) {
         len = DS2431_READ_PASS;
     }
-    resp->status = ds2431_last_command_ok() ? BR_OK : BR_NO_DEVICE;
+    resp->status = BR_OK;
     resp->cmd = BR_CMD_EEPROM_READ;
     resp->len = len;
     fast_copy(resp->data, eeprom_dst, len);
@@ -1143,13 +1182,18 @@ static void start_eeprom_write(const br_command_t *cmd)
         eeprom_error = 1u;
         return;
     }
-    ds2431_write_scratchpad(addr, cmd->data + 9u, len);
+    /* The descriptor validates the block, so a reject here means the timer is
+       owned by something else. Report it instead of polling stale flags. */
+    if (!ds2431_write_scratchpad(addr, cmd->data + 9u, len)) {
+        eeprom_error = 2u;
+    }
 }
 
 static uint8_t poll_eeprom_write(br_response_t *resp)
 {
-    if (eeprom_error) {
-        resp_simple(resp, BR_CMD_EEPROM_WRITE, BR_PARAM_ERROR);
+    if (eeprom_error != 0u) {
+        resp_simple(resp, BR_CMD_EEPROM_WRITE,
+                    (eeprom_error == 1u) ? BR_PARAM_ERROR : BR_BUS_ERROR);
         return 1u;
     }
     switch (eeprom_step) {
@@ -1208,7 +1252,11 @@ static uint8_t poll_eeprom_read_s(br_response_t *resp)
     if (!ds2431_read_scratchpad_poll()) {
         return 0u;
     }
-    resp->status = ds2431_last_command_ok() ? BR_OK : BR_NO_DEVICE;
+    if (!ds2431_last_command_ok()) {
+        resp_simple(resp, BR_CMD_EEPROM_READ_S, BR_NO_DEVICE);
+        return 1u;
+    }
+    resp->status = BR_OK;
     resp->cmd = BR_CMD_EEPROM_READ_S;
     resp->len = DS2431_SCRATCH_FRAME;
     fast_copy(resp->data, eeprom_scratch, DS2431_SCRATCH_FRAME);
@@ -1238,7 +1286,11 @@ static uint8_t poll_io_read(br_response_t *resp)
     if (!ds2413_read_pio_poll()) {
         return 0u;
     }
-    resp->status = ds2413_last_command_ok() ? BR_OK : BR_NO_DEVICE;
+    if (!ds2413_last_command_ok()) {
+        resp_simple(resp, BR_CMD_IO_READ, BR_NO_DEVICE);
+        return 1u;
+    }
+    resp->status = BR_OK;
     resp->cmd = BR_CMD_IO_READ;
     resp->len = 2u;
     resp->data[0] = ds2413_last_pio();
@@ -1433,8 +1485,8 @@ static const br_cmd_desc_t cmd_map[BR_CMD_STATS_RESET + 1u] = {
     [BR_CMD_TEMP_RECALL]    = BR_DESC(start_temp_recall,    poll_temp_recall,    0u,  8u,  8u, BR_ARG_ROM),
     [BR_CMD_TEMP_DETECT_P]  = BR_DESC(start_temp_detect_p,  poll_temp_detect_p,  0u,  8u,  8u, BR_ARG_ROM),
 
-    [BR_CMD_EEPROM_READ]    = BR_DESC(start_eeprom_read,    poll_eeprom_read,    0u, 10u, 10u, BR_ARG_ROM | BR_ARG_EEPROM_N),
-    [BR_CMD_EEPROM_WRITE]   = BR_DESC(start_eeprom_write,   poll_eeprom_write,   0u, 10u, 17u, BR_ARG_ROM),
+    [BR_CMD_EEPROM_READ]    = BR_DESC(start_eeprom_read,    poll_eeprom_read,    0u, 10u, 10u, BR_ARG_ROM | BR_ARG_EEPROM_N | BR_ARG_EEPROM_RD),
+    [BR_CMD_EEPROM_WRITE]   = BR_DESC(start_eeprom_write,   poll_eeprom_write,   0u, 10u, 17u, BR_ARG_ROM | BR_ARG_EEPROM_WR),
     [BR_CMD_EEPROM_READ_S]  = BR_DESC(start_eeprom_read_s,  poll_eeprom_read_s,  0u,  8u,  8u, BR_ARG_ROM),
 
     [BR_CMD_IO_READ]        = BR_DESC(start_io_read,        poll_io_read,        0u,  8u,  8u, BR_ARG_ROM),
@@ -1524,11 +1576,11 @@ uint8_t bridge_submit(const uint8_t *frame, uint8_t len)
         queue_tail = 0u;
     }
     if (queue_count >= BR_QUEUE_SIZE) {
-        bus.resp.status = BR_QUEUE_FULL;
-        bus.resp.cmd = cmd;
-        bus.resp.len = 0u;
-        resp_commit();
-        led_result(BR_QUEUE_FULL);
+        /* Both queue slots are taken by a running command and its successors.
+           Writing a QUEUE_FULL response here would clobber the in-flight
+           command's result (bus.resp belongs to it), so the frame is dropped
+           and only counted. The host's own timeout covers the missing reply. */
+        stats_count(BR_STAT_QUEUE_DROP);
         return 0u;
     }
     if (bus.state == BR_BUS_IDLE && queue_count == 0u) {

@@ -34,6 +34,11 @@ of hand-building a Skip ROM frame. `OW_MATCH_ROM`, `OW_SKIP_ROM` and
 `OW_READ_ROM` append a presence byte; `owbridge_demo.py` prints it for
 `readrom`, and the command still returns `OK` when no device answered.
 
+Since 1.3.0 `STATS_GET` returns nine counters (40 bytes, adding `queue_drop`)
+and a frame that arrives with both queue slots full is dropped without a
+reply. `owbridge_demo.py queue` measures that counter instead of waiting for a
+`QUEUE_FULL` frame.
+
 ## Host-only unit tests
 
 `python3 -m unittest -v test_host_helpers` checks the positional mapping,

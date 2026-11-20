@@ -787,9 +787,9 @@ class Bridge:
 
     def stats_get(self) -> dict:
         raw = self.expect(0x54)
-        if len(raw) < 36:
-            raise BridgeError("STATS_GET returned %d bytes, expected 36" % len(raw))
-        words = [int.from_bytes(raw[i * 4:i * 4 + 4], "big") for i in range(9)]
+        if len(raw) < 40:
+            raise BridgeError("STATS_GET returned %d bytes, expected 40" % len(raw))
+        words = [int.from_bytes(raw[i * 4:i * 4 + 4], "big") for i in range(10)]
         return {
             "resets": words[0],
             "presence_fail": words[1],
@@ -799,7 +799,8 @@ class Bridge:
             "commands": words[5],
             "aborts": words[6],
             "read_fail": words[7],
-            "uptime_s": words[8],
+            "queue_drop": words[8],
+            "uptime_s": words[9],
         }
 
     def stats_reset(self) -> None:
@@ -1023,7 +1024,7 @@ def sc_info(bridge: Bridge, out: Out, args) -> dict:
 
     out.title("Statistics")
     stats = bridge.stats_get()
-    for key in ("commands", "resets", "presence_fail", "crc_error", "bus_short", "timeout", "aborts"):
+    for key in ("commands", "resets", "presence_fail", "crc_error", "bus_short", "timeout", "aborts", "read_fail", "queue_drop"):
         out.kv(key, str(stats[key]))
     out.kv("uptime", "%d s (%d min %d s)" % (stats["uptime_s"], stats["uptime_s"] // 60, stats["uptime_s"] % 60))
 
@@ -1541,36 +1542,25 @@ def sc_queue(bridge: Bridge, out: Out, args) -> dict:
     out.note("the host could read it: the bridge keeps only the latest response.")
 
     # Queue full: two entries fit behind the running command, the third is
-    # rejected immediately.
+    # dropped without a response and only counted (firmware 1.3.0). The host
+    # sees its own timeout; queue_drop is the only trace of the loss.
     out.title("Queue full")
+    before = bridge.stats_get()["queue_drop"]
     bridge._tx(bytes([0x20, 0x00]))
     time.sleep(0.01)
     bridge._tx(bytes([0x0F, 0x00]))
     bridge._tx(bytes([0x0F, 0x00]))
     bridge._tx(bytes([0x0F, 0x00]))
-    full = None
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        hdr = bridge._rx(3)
-        if hdr[0] == 0xFF and hdr[1] == 0xFF:
-            continue
-        if hdr[0] == BR_QUEUE_FULL:
-            full = {
-                "status": "QUEUE_FULL",
-                "cmd": "0x%02X" % hdr[1],
-                "name": CMD_NAMES.get(hdr[1], "?"),
-            }
-            break
-        time.sleep(0.001)
-    if full is None:
-        out.warn("QUEUE_FULL was not observed")
-    else:
-        out.kv("rejected", "%s %s (depth 2 is already occupied)" % (full["cmd"], full["name"]))
-
-    # Let the two queued OW_GET_COUNT commands drain so the next process sees
-    # an idle bus (the running Convert T takes 750 ms).
+    # Drain the running conversion and both queued commands.
     time.sleep(1.2)
-    return {"responses": seen, "queue_full": full}
+    after = bridge.stats_get()["queue_drop"]
+    dropped = after - before
+    if dropped == 1:
+        out.kv("dropped", "third frame, no response (queue_drop=%d)" % after)
+    else:
+        out.warn("queue_drop moved by %d, expected 1" % dropped)
+
+    return {"responses": seen, "queue_drop": dropped}
 
 
 def sc_abort(bridge: Bridge, out: Out, args) -> dict:
